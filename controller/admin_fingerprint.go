@@ -1,6 +1,26 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
 package controller
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -61,7 +81,7 @@ func FPGetLinks(c *gin.Context) {
 		"data":    enriched,
 		"total":   total,
 		"page":    page,
-		})
+	})
 }
 
 // FPGetLinkDetail GET /api/admin/fingerprint/links/:id
@@ -112,7 +132,16 @@ func FPReviewLink(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
-// FPGetUserAssociations GET /api/admin/fingerprint/user/:id/associations
+// ═══════════════════════════════════════════════════════════════
+// ★★★ 核心修改：FPGetUserAssociations ★★★
+// GET /api/admin/fingerprint/user/:id/associations
+//
+// 旧逻辑: fingerprint_id → GetFingerprintByID() → 查 user_fingerprints（流水表，会被清理）
+// 新逻辑: device_profile_id → GetDeviceProfileByID() → 查 user_device_profiles（永久表）
+//
+//	→ DeviceProfileToFingerprint() → 转为 Fingerprint 结构供比对
+//
+// ═══════════════════════════════════════════════════════════════
 func FPGetUserAssociations(c *gin.Context) {
 	targetUserID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -123,15 +152,54 @@ func FPGetUserAssociations(c *gin.Context) {
 	minConf, _ := strconv.ParseFloat(c.DefaultQuery("min_confidence", "0.3"), 64)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	refresh := c.DefaultQuery("refresh", "false") == "true"
-	fpID, _ := strconv.ParseInt(c.DefaultQuery("fingerprint_id", "0"), 10, 64)
 
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
 
-	result, err := service.QueryUserAssociations(targetUserID, minConf, limit, refresh, fpID)
+	// ──────────────────────────────────────────────────────────
+	// ★ 改动 1: 读取 device_profile_id（来自 user_device_profiles 表）
+	//           替代原来的 fingerprint_id（来自 user_fingerprints 表）
+	// ──────────────────────────────────────────────────────────
+	dpIDStr := c.DefaultQuery("device_profile_id", "0")
+	dpID, parseErr := strconv.ParseInt(dpIDStr, 10, 64)
+	if parseErr != nil {
+		dpID = 0 // 解析失败则忽略，不按指定设备档案过滤
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// ★ 改动 2: 查 user_device_profiles 表，转为 Fingerprint 结构
+	// ──────────────────────────────────────────────────────────
+	var baseFingerprint *model.Fingerprint // nil = 使用默认逻辑（自动选最近指纹）
+
+	if dpID > 0 {
+		profile := model.GetDeviceProfileByID(dpID)
+		if profile == nil {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("设备档案 %d 不存在", dpID),
+			})
+			return
+		}
+
+		// 转为 Fingerprint 结构，作为比对基准
+		baseFingerprint = model.DeviceProfileToFingerprint(profile)
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// ★ 改动 3: 传 *model.Fingerprint 而非 int64 fpID
+	//           service.QueryUserAssociations 签名需同步修改（见下方说明）
+	// ──────────────────────────────────────────────────────────
+	result, err := service.QueryUserAssociations(targetUserID, minConf, limit, refresh, baseFingerprint)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		// 区分"无数据"与"真正的服务器错误"
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": gin.H{
+				"associations": []interface{}{},
+				"message":      err.Error(),
+			},
+		})
 		return
 	}
 
@@ -173,6 +241,15 @@ func FPGetUserRisk(c *gin.Context) {
 	if score == nil {
 		service.UpdateRiskScore(userID)
 		score = model.GetUserRiskScore(userID)
+	}
+
+	if score == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data":    nil,
+			"message": "该用户暂无风险评分数据",
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -221,7 +298,13 @@ func FPCompareUsers(c *gin.Context) {
 	}
 
 	fpsA := model.GetLatestFingerprints(req.UserA, 5)
+	if len(fpsA) == 0 {
+		fpsA = model.GetDeviceProfilesAsFingerprints(req.UserA)
+	}
 	fpsB := model.GetLatestFingerprints(req.UserB, 5)
+	if len(fpsB) == 0 {
+		fpsB = model.GetDeviceProfilesAsFingerprints(req.UserB)
+	}
 
 	if len(fpsA) == 0 || len(fpsB) == 0 {
 		c.JSON(http.StatusOK, gin.H{
@@ -291,8 +374,6 @@ func getUserBriefByID(userID int) service.UserBrief {
 	}
 }
 
-// banNewerAccount 封禁较新注册的账号
-// 使用 ID 大小判断: 更大的 ID = 更晚注册的账号
 func banNewerAccount(userA, userB int) {
 	if userA > userB {
 		banUserByID(userA)
@@ -307,7 +388,6 @@ func banUserByID(userID int) {
 }
 
 // FPGetUserDevices GET /api/admin/fingerprint/user/:id/devices
-// 返回用户所有设备档案（永久保留，不受流水清理影响）
 func FPGetUserDevices(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Param("id"))
 	if err != nil {

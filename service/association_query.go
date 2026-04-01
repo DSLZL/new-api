@@ -50,22 +50,45 @@ type ExistingLinkInfo struct {
 	Status string `json:"status"`
 }
 
-// QueryUserAssociations 查询用户关联账号 (核心功能)
-func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, forceRefresh bool, selectedFPID int64) (*AssociationResult, error) {
+// ═══════════════════════════════════════════════════════════════════════
+// ★★★ 核心修改：QueryUserAssociations ★★★
+//
+// 旧签名: func QueryUserAssociations(... selectedFPID int64)
+//
+//	→ 内部调 model.GetFingerprintByID(selectedFPID) 查 user_fingerprints 流水表
+//
+// 新签名: func QueryUserAssociations(... baseFingerprint *model.Fingerprint)
+//
+//	→ controller 层已完成:
+//	    device_profile_id → GetDeviceProfileByID() → DeviceProfileToFingerprint()
+//	  此处直接使用传入的 *model.Fingerprint，无需再查表
+//	→ 当 baseFingerprint == nil 时，自动从流水表 / 设备档案表获取
+//
+// ═══════════════════════════════════════════════════════════════════════
+func QueryUserAssociations(
+	targetUserID int,
+	minConfidence float64,
+	limit int,
+	forceRefresh bool,
+	baseFingerprint *model.Fingerprint, // ★ 改动: int64 → *model.Fingerprint
+) (*AssociationResult, error) {
 	startTime := time.Now()
 
 	if !common.FingerprintEnabled {
 		return nil, fmt.Errorf("fingerprint system is not enabled")
 	}
 
-	// 1. 检查缓存 (如果指定了特定的指纹比对，则不使用全局缓存)
-	if !forceRefresh && common.RedisEnabled && selectedFPID == 0 {
+	// ──────────────────────────────────────────────────────────
+	// 1. 检查缓存
+	//    ★ 改动: selectedFPID == 0 → baseFingerprint == nil
+	//    指定了特定设备档案比对时不使用全局缓存
+	// ──────────────────────────────────────────────────────────
+	if !forceRefresh && common.RedisEnabled && baseFingerprint == nil {
 		cacheKey := fmt.Sprintf("fp:assoc:%d", targetUserID)
 		cached, err := common.RedisGet(cacheKey)
 		if err == nil && cached != "" {
 			var result AssociationResult
 			if json.Unmarshal([]byte(cached), &result) == nil {
-				// 根据 minConfidence 过滤
 				filtered := make([]AssociationItem, 0)
 				for _, a := range result.Associations {
 					if a.Confidence >= minConfidence {
@@ -81,18 +104,28 @@ func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, f
 		}
 	}
 
-	// 2. 获取目标用户的指纹
+	// ──────────────────────────────────────────────────────────
+	// 2. 获取目标用户的指纹（比对基准）
+	//
+	// ★ 改动:
+	//   旧: if selectedFPID > 0 { model.GetFingerprintByID(selectedFPID) }
+	//   新: if baseFingerprint != nil { 直接使用 controller 传入的已转换指纹 }
+	//       else { 流水表 → 设备档案表 兜底 }
+	// ──────────────────────────────────────────────────────────
 	var targetFPs []*model.Fingerprint
-	if selectedFPID > 0 {
-		fp := model.GetFingerprintByID(selectedFPID)
-		if fp != nil && fp.UserID == targetUserID {
-			targetFPs = []*model.Fingerprint{fp}
-		} else {
-			return nil, fmt.Errorf("selected fingerprint not found or doesn't belong to the user")
-		}
+
+	if baseFingerprint != nil {
+		// ★ 管理员指定了某个设备档案，controller 已转为 Fingerprint，直接用
+		targetFPs = []*model.Fingerprint{baseFingerprint}
 	} else {
+		// 默认逻辑：先查流水表
 		targetFPs = model.GetLatestFingerprints(targetUserID, 10)
+		// ★ 新增兜底: 流水表可能已被定期清理，改从设备档案表获取
+		if len(targetFPs) == 0 {
+			targetFPs = model.GetDeviceProfilesAsFingerprints(targetUserID)
+		}
 	}
+
 	if len(targetFPs) == 0 {
 		return &AssociationResult{
 			TargetUser:      getUserBrief(targetUserID),
@@ -103,7 +136,9 @@ func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, f
 		}, nil
 	}
 
-	// 3. 搜索候选账号
+	// ──────────────────────────────────────────────────────────
+	// 3. 搜索候选账号（此部分逻辑不变）
+	// ──────────────────────────────────────────────────────────
 	candidateSet := make(map[int]bool)
 	for _, fp := range targetFPs {
 		appendUnique := func(ids []int) {
@@ -142,11 +177,18 @@ func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, f
 		delete(candidateSet, uid)
 	}
 
+	// ──────────────────────────────────────────────────────────
 	// 5. 计算关联度
+	//    ★ 改动: 候选用户的指纹也增加设备档案兜底
+	// ──────────────────────────────────────────────────────────
 	associations := make([]AssociationItem, 0)
 
 	for candidateUID := range candidateSet {
 		candidateFPs := model.GetLatestFingerprints(candidateUID, 10)
+		// ★ 新增兜底: 候选用户流水表也可能为空
+		if len(candidateFPs) == 0 {
+			candidateFPs = model.GetDeviceProfilesAsFingerprints(candidateUID)
+		}
 		if len(candidateFPs) == 0 {
 			continue
 		}
@@ -196,12 +238,14 @@ func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, f
 		associations = append(associations, item)
 	}
 
+	// ──────────────────────────────────────────────────────────
 	// 6. 排序并缓存
+	//    ★ 改动: selectedFPID == 0 → baseFingerprint == nil
+	// ──────────────────────────────────────────────────────────
 	sort.Slice(associations, func(i, j int) bool {
 		return associations[i].Confidence > associations[j].Confidence
 	})
 
-	// 保存完整结果到缓存
 	fullResult := &AssociationResult{
 		TargetUser:      getUserBrief(targetUserID),
 		Associations:    associations,
@@ -210,8 +254,8 @@ func QueryUserAssociations(targetUserID int, minConfidence float64, limit int, f
 		TimeCostMs:      time.Since(startTime).Milliseconds(),
 	}
 
-	// 缓存
-	if common.RedisEnabled && selectedFPID == 0 {
+	// ★ 改动: 仅在未指定特定设备档案时缓存（全局结果）
+	if common.RedisEnabled && baseFingerprint == nil {
 		if data, err := json.Marshal(fullResult); err == nil {
 			cacheKey := fmt.Sprintf("fp:assoc:%d", targetUserID)
 			common.RedisSet(cacheKey, string(data), 30*time.Minute)

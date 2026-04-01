@@ -344,3 +344,31 @@ func GetDeviceProfilesAsFingerprints(userID int) []*Fingerprint {
 	}
 	return result
 }
+
+// GetDeviceProfileByID 根据主键查询设备档案（user_device_profiles 表）
+func GetDeviceProfileByID(id int64) *UserDeviceProfile {
+	var dp UserDeviceProfile
+	if err := DB.First(&dp, id).Error; err != nil {
+		return nil
+	}
+	return &dp
+}
+
+// DeviceProfileToFingerprint 将单个设备档案转换为 Fingerprint 结构
+// 供关联分析时作为比对基准使用
+func DeviceProfileToFingerprint(p *UserDeviceProfile) *Fingerprint {
+	return &Fingerprint{
+		UserID:        p.UserID,
+		CanvasHash:    p.CanvasHash,
+		WebGLHash:     p.WebGLHash,
+		AudioHash:     p.AudioHash,
+		FontsHash:     p.FontsHash,
+		LocalDeviceID: p.LocalDeviceID,
+		CompositeHash: p.CompositeHash,
+		UABrowser:     p.UABrowser,
+		UAOS:          p.UAOS,
+		UADeviceType:  p.UADeviceType,
+		IPAddress:     p.LastSeenIP,
+		CreatedAt:     p.LastSeenAt,
+	}
+}
