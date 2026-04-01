@@ -73,35 +73,5 @@ export function useFingerprint(userId) {
       window.removeEventListener('napi:user-login', onLogin);
       if (loginTimer) clearTimeout(loginTimer);
     };
-  }, []);
-export function useFingerprint(userId) {
-  const reported = useRef(false);
-
-  useEffect(() => {
-    if (!userId || reported.current) return;
-
-    // 检查上次上报时间
-    const lastReport = localStorage.getItem('_napi_fp_ts');
-    if (lastReport && Date.now() - parseInt(lastReport) < REPORT_INTERVAL) {
-      return;
-    }
-
-    const report = async () => {
-      try {
-        const fp = await fingerprintCollector.collect();
-        if (!fp) return;
-
-        await API.post('/api/fingerprint/report', fp);
-        localStorage.setItem('_napi_fp_ts', Date.now().toString());
-        reported.current = true;
-      } catch (e) {
-        // 静默失败，不影响用户体验
-        console.debug('FP report skipped:', e?.message);
-      }
-    };
-
-    // 延迟3秒采集，不阻塞页面渲染
-    const timer = setTimeout(report, 3000);
-    return () => clearTimeout(timer);
-  }, [userId]);
+  }, [])
 }

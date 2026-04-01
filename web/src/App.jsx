@@ -135,14 +135,6 @@ function App() {
   useFingerprint(userId);
   // ════════════════════════════════════════════════════════════
   // ★ 指纹采集
-  const userId = (() => {
-    try {
-      return parseInt(localStorage.getItem('user_id') || '0');
-    } catch {
-      return 0;
-    }
-  })();
-  useFingerprint(userId);
 
   // 获取模型广场权限配置
   const pricingRequireAuth = useMemo(() => {

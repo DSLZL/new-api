@@ -184,6 +184,13 @@ const SiderBar = ({ onNavigate = () => {} }) => {
         to: '/user',
         className: isAdmin() ? '' : 'tableHiddle',
       },
+      // ✅ 添加指纹分析
+      {
+        text: t('指纹分析'),
+        itemKey: 'fingerprint',
+        to: '/fingerprint',
+        className: isAdmin() ? '' : 'tableHiddle',
+      },
       {
         text: t('系统设置'),
         itemKey: 'setting',
