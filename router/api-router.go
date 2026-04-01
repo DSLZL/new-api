@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 
@@ -373,5 +374,49 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.POST("/:id/extend", controller.ExtendDeployment)
 			deploymentsRoute.DELETE("/:id", controller.DeleteDeployment)
 		}
+
+		// ★ 指纹系统路由
+		SetFingerprintRoutes(apiRouter)
+	}
+}
+
+// SetFingerprintRoutes 注册指纹系统路由
+func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
+	if !common.FingerprintEnabled {
+		return
+	}
+
+	// 指纹上报 — 已登录用户
+	fpAPI := apiRouter.Group("/fingerprint")
+	fpAPI.Use(middleware.UserAuth())
+	{
+		fpAPI.POST("/report", controller.ReportFingerprint)
+	}
+
+	// 权限查询 — 已登录用户
+	apiRouter.GET("/fingerprint/access", middleware.UserAuth(), controller.GetFingerprintAccess)
+
+	// 管理接口 — 受 FingerprintAdminAuth 保护
+	fpAdmin := apiRouter.Group("/admin/fingerprint")
+	fpAdmin.Use(middleware.AdminAuth())
+	fpAdmin.Use(middleware.FingerprintAdminAuth())
+	{
+		fpAdmin.GET("/dashboard", controller.FPDashboard)
+		fpAdmin.GET("/links", controller.FPGetLinks)
+		fpAdmin.GET("/links/:id", controller.FPGetLinkDetail)
+		fpAdmin.POST("/links/:id/review", controller.FPReviewLink)
+
+		// ★ 关联度查询
+		fpAdmin.GET("/user/:id/associations", controller.FPGetUserAssociations)
+
+		fpAdmin.GET("/user/:id/fingerprints", controller.FPGetUserFingerprints)
+		fpAdmin.GET("/user/:id/devices", controller.FPGetUserDevices)
+		fpAdmin.GET("/user/:id/risk", controller.FPGetUserRisk)
+		fpAdmin.GET("/user/:id/ip-history", controller.FPGetUserIPHistory)
+
+		fpAdmin.POST("/compare", controller.FPCompareUsers)
+
+		// 仅超级管理员
+		fpAdmin.POST("/scan", middleware.SuperAdminOnly(), controller.FPTriggerFullScan)
 	}
 }

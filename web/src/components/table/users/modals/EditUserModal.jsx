@@ -56,6 +56,8 @@ import {
   IconPlus,
 } from '@douyinfe/semi-icons';
 import UserBindingManagementModal from './UserBindingManagementModal';
+import UserAssociations from '../../../../pages/Admin/UserAssociations';
+import { checkFingerprintAccess } from '../../../../helpers/fingerprint';
 
 const { Text, Title } = Typography;
 
@@ -69,6 +71,7 @@ const EditUserModal = (props) => {
   const isMobile = useIsMobile();
   const [groupOptions, setGroupOptions] = useState([]);
   const [bindingModalVisible, setBindingModalVisible] = useState(false);
+  const [hasFPAccess, setHasFPAccess] = useState(false);
   const formApiRef = useRef(null);
 
   const isEdit = Boolean(userId);
@@ -119,6 +122,11 @@ const EditUserModal = (props) => {
     if (userId) fetchGroups();
     setBindingModalVisible(false);
   }, [props.editingUser.id]);
+
+  // 检查指纹系统权限
+  useEffect(() => {
+    checkFingerprintAccess().then(setHasFPAccess);
+  }, []);
 
   const openBindingModal = () => {
     setBindingModalVisible(true);
@@ -357,6 +365,11 @@ const EditUserModal = (props) => {
                       </Button>
                     </div>
                   </Card>
+                )}
+
+                {/* ★ 指纹关联查询 */}
+                {userId && hasFPAccess && (
+                  <UserAssociations userId={userId} />
                 )}
               </div>
             )}

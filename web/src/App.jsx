@@ -17,7 +17,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { lazy, Suspense, useContext, useMemo } from 'react';
+import React, {
+  lazy,
+  Suspense,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Route, Routes, useLocation, useParams } from 'react-router-dom';
 import Loading from './components/common/ui/Loading';
 import User from './pages/User';
@@ -49,6 +58,8 @@ import OAuth2Callback from './components/auth/OAuth2Callback';
 import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
+import { useFingerprint } from './hooks/useFingerprint';
+const FingerprintPage = lazy(() => import('./pages/Admin/Fingerprint'));
 
 const Home = lazy(() => import('./pages/Home'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -64,6 +75,74 @@ function DynamicOAuth2Callback() {
 function App() {
   const location = useLocation();
   const [statusState] = useContext(StatusContext);
+
+  // ════════════════════════════════════════════════════════════
+  // ★ 指纹采集 - 响应式读取 userId，确保登录/��册后能触发
+  // ════════════════════════════════════════════════════════════
+  const [userId, setUserId] = useState(() => {
+    try {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      return parseInt(user.id || '0');
+    } catch {
+      return 0;
+    }
+  });
+
+  // ── 从 localStorage 同步 userId 的辅助函数 ──
+  const syncUserId = useCallback(() => {
+    try {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const newId = parseInt(user.id || '0');
+      setUserId((prev) => (prev === newId ? prev : newId));
+    } catch {
+      setUserId(0);
+    }
+  }, []);
+
+  // ── 检测 userId 从 0 → 有效值的转变，派发事件通知 hook ──
+  const prevUserIdRef = useRef(userId);
+  useEffect(() => {
+    if (userId > 0 && prevUserIdRef.current === 0) {
+      window.dispatchEvent(new Event('napi:user-login'));
+    }
+    prevUserIdRef.current = userId;
+  }, [userId]);
+
+  // ── 层1: 跨标签页 storage 事件（其他标签页登录时触发）──
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== null && e.key !== 'user') return;
+      syncUserId();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [syncUserId]);
+
+  // ── 层2: 路由变化检测（同标签页 SPA 跳转时触发）──
+  // 登录/注册成功后前端先写 localStorage，再 navigate → pathname 变化 → 读到新 userId
+  useEffect(() => {
+    syncUserId();
+  }, [location.pathname, syncUserId]);
+
+  // ── 层3: 兜底轮询（应对无路由跳转的边缘场景，如弹窗登录）──
+  // 仅在 userId 为 0 时每 2 秒轮询，检测到 userId 后自动停止
+  useEffect(() => {
+    if (userId > 0) return;
+    const interval = setInterval(syncUserId, 2000);
+    return () => clearInterval(interval);
+  }, [userId, syncUserId]);
+
+  useFingerprint(userId);
+  // ════════════════════════════════════════════════════════════
+  // ★ 指纹采集
+  const userId = (() => {
+    try {
+      return parseInt(localStorage.getItem('user_id') || '0');
+    } catch {
+      return 0;
+    }
+  })();
+  useFingerprint(userId);
 
   // 获取模型广场权限配置
   const pricingRequireAuth = useMemo(() => {
@@ -168,6 +247,16 @@ function App() {
           element={
             <AdminRoute>
               <User />
+            </AdminRoute>
+          }
+        />
+        <Route
+          path='/console/fingerprint'
+          element={
+            <AdminRoute>
+              <Suspense fallback={<Loading></Loading>}>
+                <FingerprintPage />
+              </Suspense>
             </AdminRoute>
           }
         />

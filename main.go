@@ -112,6 +112,9 @@ func main() {
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
+	// ★ 新增: 初始化指纹系统定时任务
+	service.InitFingerprintCron()
+
 	// Wire task polling adaptor factory (breaks service -> relay import cycle)
 	service.GetTaskAdaptorFunc = func(platform constant.TaskPlatform) service.TaskPollingAdaptor {
 		a := relay.GetTaskAdaptor(platform)
@@ -261,6 +264,9 @@ func InitResources() error {
 
 	service.InitTokenEncoders()
 
+	// ★ 指纹系统配置必须在 InitDB 之前初始化，RunFingerprintMigration 依赖此标志
+	common.InitFingerprintConfig()
+
 	// Initialize SQL Database
 	err = model.InitDB()
 	if err != nil {
@@ -272,6 +278,9 @@ func InitResources() error {
 
 	// Initialize options, should after model.InitDB()
 	model.InitOptionMap()
+
+	// ★ 新增: 初始化指纹系统配置
+	common.InitFingerprintConfig()
 
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()

@@ -49,6 +49,7 @@ const routerMap = {
   deployment: '/console/deployment',
   playground: '/console/playground',
   personal: '/console/personal',
+  fingerprint: '/console/fingerprint',
 };
 
 const SiderBar = ({ onNavigate = () => {} }) => {

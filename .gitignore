@@ -22,6 +22,10 @@ tiktoken_cache
 web/bun.lock
 plans
 .claude
+.spec-workflow
+# gitignore handled
+=======
+>>>>>>> c3a4d1935512f4daa8da05f8dd99e020be1e9b90
 
 electron/node_modules
 electron/dist

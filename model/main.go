@@ -284,6 +284,10 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+
+	// ★ 新增: 指纹系统表迁移
+	RunFingerprintMigration()
+
 	if common.UsingSQLite {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err

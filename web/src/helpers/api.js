@@ -92,7 +92,18 @@ export function updateAPI() {
   });
 
   patchAPIInstance(API);
+  // 通知 useFingerprint 用户已登录
+  window.dispatchEvent(new Event('napi:user-login'));
 }
+
+API.interceptors.request.use((config) => {
+  // 每次请求动态读取最新 userId，避免 incognito/登录后 header 过期
+  const freshId = getUserIdFromLocalStorage();
+  if (freshId) {
+    config.headers['New-API-User'] = freshId;
+  }
+  return config;
+});
 
 API.interceptors.response.use(
   (response) => response,

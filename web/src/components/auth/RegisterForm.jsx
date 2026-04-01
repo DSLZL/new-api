@@ -64,6 +64,8 @@ import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
 import { useTranslation } from 'react-i18next';
 import { SiDiscord } from 'react-icons/si';
+// ★ 指纹采集 SDK
+import fingerprintCollector from '../../utils/fingerprint';
 
 const RegisterForm = () => {
   let navigate = useNavigate();
@@ -231,13 +233,34 @@ const RegisterForm = () => {
       }
       setRegisterLoading(true);
       try {
+        // ★ 在注册请求发出前，先采集浏览器指纹
+        //   设置 3 秒超时，避免采集卡住阻塞注册流程
+        let fingerprint = null;
+        try {
+          fingerprint = await Promise.race([
+            fingerprintCollector.collect(),
+            new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+          ]);
+        } catch (fpErr) {
+          console.debug('Fingerprint collection skipped:', fpErr?.message);
+        }
+
         if (!affCode) {
           affCode = localStorage.getItem('aff');
         }
-        inputs.aff_code = affCode;
+
+        // ★ 构建 payload，包含用户信息 + 指纹数据
+        const payload = {
+          ...inputs,
+          aff_code: affCode,
+        };
+        if (fingerprint) {
+          payload.fingerprint = fingerprint;
+        }
+
         const res = await API.post(
           `/api/user/register?turnstile=${turnstileToken}`,
-          inputs,
+          payload,
         );
         const { success, message } = res.data;
         if (success) {
@@ -781,8 +804,7 @@ const RegisterForm = () => {
         style={{ top: '50%', left: '-120px' }}
       />
       <div className='w-full max-w-sm mt-[60px]'>
-        {showEmailRegister ||
-        !hasOAuthRegisterOptions
+        {showEmailRegister || !hasOAuthRegisterOptions
           ? renderEmailRegisterForm()
           : renderOAuthOptions()}
         {renderWeChatLoginModal()}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -128,6 +130,32 @@ func Logout(c *gin.Context) {
 	})
 }
 
+// ─── 注册时客户端指纹数据结构 ───
+type ClientFingerprintData struct {
+	CanvasHash    string  `json:"canvas_hash"`
+	WebGLHash     string  `json:"webgl_hash"`
+	WebGLVendor   string  `json:"webgl_vendor"`
+	WebGLRenderer string  `json:"webgl_renderer"`
+	AudioHash     string  `json:"audio_hash"`
+	FontsHash     string  `json:"fonts_hash"`
+	FontsList     string  `json:"fonts_list"`
+	ScreenWidth   int     `json:"screen_width"`
+	ScreenHeight  int     `json:"screen_height"`
+	ColorDepth    int     `json:"color_depth"`
+	PixelRatio    float32 `json:"pixel_ratio"`
+	CPUCores      int     `json:"cpu_cores"`
+	DeviceMemory  float32 `json:"device_memory"`
+	MaxTouch      int     `json:"max_touch"`
+	Timezone      string  `json:"timezone"`
+	TZOffset      int     `json:"tz_offset"`
+	Languages     string  `json:"languages"`
+	Platform      string  `json:"platform"`
+	DoNotTrack    string  `json:"do_not_track"`
+	CookieEnabled bool    `json:"cookie_enabled"`
+	LocalDeviceID string  `json:"local_device_id"`
+	CompositeHash string  `json:"composite_hash"`
+}
+
 func Register(c *gin.Context) {
 	if !common.RegisterEnabled {
 		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
@@ -137,12 +165,26 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
-	var user model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
+
+	// ★ 读取完整请求体，以便分别解析 user 字段和 fingerprint 字段
+	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+
+	var user model.User
+	if err := json.Unmarshal(bodyBytes, &user); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	// ★ 提取客户端指纹（可选字段，不影响注册流程）
+	var fpWrapper struct {
+		Fingerprint *ClientFingerprintData `json:"fingerprint"`
+	}
+	_ = json.Unmarshal(bodyBytes, &fpWrapper)
+
 	if err := common.Validate.Struct(&user); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
@@ -217,6 +259,96 @@ func Register(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgCreateDefaultTokenErr)
 			return
 		}
+	}
+
+	// ★ 注册时采集指纹：合并服务端 IP/UA 与客户端浏览器指纹
+	if common.FingerprintEnabled {
+		realIP := c.GetString("real_ip")
+		if realIP == "" {
+			realIP = middleware.ExtractRealIP(c)
+		}
+		userAgent := c.GetHeader("User-Agent")
+		uid := insertedUser.Id
+		clientFP := fpWrapper.Fingerprint
+
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// 静默处理 panic
+				}
+			}()
+
+			parsedUA := common.ParseUserAgent(userAgent)
+			ipInfo := service.LookupIP(realIP)
+
+			// 1. 记录 IP/UA 历史（用于 IP 重叠度计算）
+			ipRecord := &model.IPUAHistory{
+				UserID:       uid,
+				IPAddress:    realIP,
+				UserAgent:    userAgent,
+				IPCountry:    ipInfo.Country,
+				IPRegion:     ipInfo.Region,
+				IPCity:       ipInfo.City,
+				IPISP:        ipInfo.ISP,
+				IPType:       ipInfo.Type,
+				IPRiskScore:  float32(ipInfo.Risk),
+				UABrowser:    parsedUA.Browser,
+				UABrowserVer: parsedUA.BrowserVer,
+				UAOS:         parsedUA.OS,
+				UAOSVer:      parsedUA.OSVer,
+				UADevice:     parsedUA.DeviceType,
+				Endpoint:     "/api/user/register",
+			}
+			_ = model.UpsertIPUAHistory(ipRecord)
+
+			// 2. 构建完整指纹记录（服务端采集 + 客户端采集）
+			fp := &model.Fingerprint{
+				UserID:       uid,
+				IPAddress:    realIP,
+				IPCountry:    ipInfo.Country,
+				IPRegion:     ipInfo.Region,
+				IPCity:       ipInfo.City,
+				IPISP:        ipInfo.ISP,
+				IPType:       ipInfo.Type,
+				UserAgent:    userAgent,
+				UABrowser:    parsedUA.Browser,
+				UABrowserVer: parsedUA.BrowserVer,
+				UAOS:         parsedUA.OS,
+				UAOSVer:      parsedUA.OSVer,
+				UADeviceType: parsedUA.DeviceType,
+			}
+
+			// ★ 合并客户端浏览器指纹（注册按钮点击时前端采集并随请求发送）
+			if clientFP != nil {
+				fp.CanvasHash = clientFP.CanvasHash
+				fp.WebGLHash = clientFP.WebGLHash
+				fp.WebGLVendor = clientFP.WebGLVendor
+				fp.WebGLRenderer = clientFP.WebGLRenderer
+				fp.AudioHash = clientFP.AudioHash
+				fp.FontsHash = clientFP.FontsHash
+				fp.FontsList = clientFP.FontsList
+				fp.ScreenWidth = clientFP.ScreenWidth
+				fp.ScreenHeight = clientFP.ScreenHeight
+				fp.ColorDepth = clientFP.ColorDepth
+				fp.PixelRatio = clientFP.PixelRatio
+				fp.CPUCores = clientFP.CPUCores
+				fp.DeviceMemory = clientFP.DeviceMemory
+				fp.MaxTouch = clientFP.MaxTouch
+				fp.Timezone = clientFP.Timezone
+				fp.TZOffset = clientFP.TZOffset
+				fp.Languages = clientFP.Languages
+				fp.Platform = clientFP.Platform
+				fp.DoNotTrack = clientFP.DoNotTrack
+				fp.CookieEnabled = clientFP.CookieEnabled
+				fp.LocalDeviceID = clientFP.LocalDeviceID
+				fp.CompositeHash = clientFP.CompositeHash
+			}
+
+			_ = fp.Insert()
+
+			// 3. 触发关联分析
+			service.AnalyzeAccountLinks(uid, fp)
+		}()
 	}
 
 	c.JSON(http.StatusOK, gin.H{
