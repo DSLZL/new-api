@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"log"
@@ -168,6 +169,7 @@ func main() {
 	// This will cause SSE not to work!!!
 	//server.Use(gzip.Gzip(gzip.DefaultCompression))
 	server.Use(middleware.RequestId())
+	server.Use(middleware.FingerprintCollectMiddleware())
 	server.Use(middleware.PoweredBy())
 	server.Use(middleware.I18n())
 	middleware.SetUpLogger(server)
@@ -194,6 +196,27 @@ func main() {
 
 	// Log startup success message
 	common.LogStartupSuccess(startTime, port)
+
+	tlsCertFile := os.Getenv("TLS_CERT_FILE")
+	tlsKeyFile := os.Getenv("TLS_KEY_FILE")
+	if tlsCertFile != "" && tlsKeyFile != "" {
+		httpServer := &http.Server{
+			Addr:    ":" + port,
+			Handler: server,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+				GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+					service.CaptureTLSJA4FromClientHello(hello)
+					return nil, nil
+				},
+			},
+		}
+		err = httpServer.ListenAndServeTLS(tlsCertFile, tlsKeyFile)
+		if err != nil {
+			common.FatalLog("failed to start HTTPS server: " + err.Error())
+		}
+		return
+	}
 
 	err = server.Run(":" + port)
 	if err != nil {

@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"net"
+	"sort"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -25,8 +28,15 @@ func FingerprintCollectMiddleware() gin.HandlerFunc {
 
 		// 2. 解析UA
 		ua := c.GetHeader("User-Agent")
+		ja4 := c.GetString("ja4_fingerprint")
+		if ja4 == "" {
+			ja4 = service.GetTLSJA4FromRemoteAddr(c.Request.RemoteAddr)
+		}
+		httpHeaderFP := extractHeaderFingerprint(c)
 		parsedUA := common.ParseUserAgent(ua)
 		c.Set("parsed_ua", parsedUA)
+		c.Set("ja4_fingerprint", ja4)
+		c.Set("http_header_fingerprint", httpHeaderFP)
 
 		c.Next()
 
@@ -69,6 +79,9 @@ func FingerprintCollectMiddleware() gin.HandlerFunc {
 					IPCity:       ipInfo.City,
 					IPISP:        ipInfo.ISP,
 					IPType:       ipInfo.Type,
+					ASN:          ipInfo.ASN,
+					ASNOrg:       ipInfo.ASNOrg,
+					IsDatacenter: ipInfo.IsDatacenter,
 					IPRiskScore:  float32(ipInfo.Risk),
 					UABrowser:    pua.Browser,
 					UABrowserVer: pua.BrowserVer,
@@ -85,6 +98,16 @@ func FingerprintCollectMiddleware() gin.HandlerFunc {
 
 // ExtractRealIP 从请求中提取真实IP
 func ExtractRealIP(c *gin.Context) string {
+	remoteIP, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+	if err != nil {
+		remoteIP = c.Request.RemoteAddr
+	}
+	remoteIP = strings.TrimSpace(remoteIP)
+
+	if !shouldTrustForwardedHeaders(remoteIP) {
+		return remoteIP
+	}
+
 	// 优先级: CF-Connecting-IP > X-Real-IP > True-Client-IP > X-Forwarded-For > RemoteAddr
 	headers := []string{
 		"CF-Connecting-IP",
@@ -92,33 +115,68 @@ func ExtractRealIP(c *gin.Context) string {
 		"True-Client-IP",
 	}
 	for _, h := range headers {
-		ip := c.GetHeader(h)
-		if ip != "" {
-			return strings.TrimSpace(ip)
+		ip := strings.TrimSpace(c.GetHeader(h))
+		if isValidForwardedIP(ip) {
+			return ip
 		}
 	}
 
-	// X-Forwarded-For: 取第一个非内网IP
+	// X-Forwarded-For: 从右向左剥离受信代理，取第一个不在受信代理列表中的合法IP
 	xff := c.GetHeader("X-Forwarded-For")
 	if xff != "" {
 		parts := strings.Split(xff, ",")
-		for _, part := range parts {
-			ip := strings.TrimSpace(part)
-			if ip != "" && !isPrivateIP(ip) {
-				return ip
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if !isValidForwardedIP(ip) {
+				continue
 			}
-		}
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				continue
+			}
+			if isTrustedForwardedProxyIP(parsed) {
+				continue
+			}
+			return ip
 		}
 	}
 
-	// RemoteAddr
-	ip, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-	if err != nil {
-		return c.Request.RemoteAddr
+	return remoteIP
+}
+
+func shouldTrustForwardedHeaders(remoteIP string) bool {
+	if remoteIP == "" {
+		return false
 	}
-	return ip
+	ip := net.ParseIP(remoteIP)
+	if ip == nil {
+		return false
+	}
+	return isTrustedForwardedProxyIP(ip)
+}
+
+func isTrustedForwardedProxyIP(ip net.IP) bool {
+	for _, cidr := range common.FingerprintTrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidForwardedIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	return true
 }
 
 func isPrivateIP(ipStr string) bool {
@@ -144,4 +202,49 @@ func isPrivateIP(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+func extractHeaderFingerprint(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+
+	headerNames := make([]string, 0, len(c.Request.Header))
+	for name := range c.Request.Header {
+		headerNames = append(headerNames, strings.ToLower(name))
+	}
+	sort.Strings(headerNames)
+	orderHash := md5Hex(strings.Join(headerNames, ","))
+
+	acceptSeries := strings.Join([]string{
+		strings.TrimSpace(c.GetHeader("Accept")),
+		strings.TrimSpace(c.GetHeader("Accept-Encoding")),
+		strings.TrimSpace(c.GetHeader("Accept-Language")),
+	}, "|")
+	acceptHash := md5Hex(acceptSeries)
+
+	presenceBits := make([]string, 0, 5)
+	presenceKeys := []string{"DNT", "Upgrade-Insecure-Requests", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-Dest"}
+	for _, key := range presenceKeys {
+		if strings.TrimSpace(c.GetHeader(key)) == "" {
+			presenceBits = append(presenceBits, "0")
+			continue
+		}
+		presenceBits = append(presenceBits, "1")
+	}
+	presenceBitmap := strings.Join(presenceBits, "")
+
+	clientHints := strings.Join([]string{
+		strings.TrimSpace(c.GetHeader("Sec-CH-UA")),
+		strings.TrimSpace(c.GetHeader("Sec-CH-UA-Platform")),
+		strings.TrimSpace(c.GetHeader("Sec-CH-UA-Mobile")),
+	}, "|")
+
+	finalRaw := strings.Join([]string{orderHash, acceptHash, presenceBitmap, clientHints}, "|")
+	return md5Hex(finalRaw)
+}
+
+func md5Hex(raw string) string {
+	sum := md5.Sum([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }

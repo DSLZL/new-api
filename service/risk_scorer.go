@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 )
@@ -42,8 +44,14 @@ func UpdateRiskScore(userID int) {
 	// 3. UA分析
 	score.UniqueUACount = model.CountUniqueUAs(userID)
 
-	// 4. 指纹变化率
+	// 4. 指纹变化率 + WebRTC 代理风险
 	fps := model.GetLatestFingerprints(userID, 20)
+	webrtcMismatchCount := 0
+	for _, fp := range fps {
+		if hasWebRTCPublicMismatch(fp) {
+			webrtcMismatchCount++
+		}
+	}
 	if len(fps) >= 2 {
 		changes := 0
 		for i := 1; i < len(fps); i++ {
@@ -65,6 +73,7 @@ func UpdateRiskScore(userID int) {
 	risk += float64(torCount) * 25.0
 	risk += float64(score.FingerprintAnomalies) * 5.0
 	risk += float64(score.FingerprintChangeRate) * 10.0
+	risk += float64(webrtcMismatchCount) * 8.0
 
 	if score.UniqueIPsCount > 50 {
 		risk += 10
@@ -90,6 +99,28 @@ func UpdateRiskScore(userID int) {
 	}
 
 	_ = model.UpsertRiskScore(score)
+}
+
+func hasWebRTCPublicMismatch(fp *model.Fingerprint) bool {
+	if fp == nil {
+		return false
+	}
+	if strings.TrimSpace(fp.IPAddress) == "" {
+		return false
+	}
+	publicIPs := parseIPJSONList(fp.WebRTCPublicIPs)
+	if len(publicIPs) == 0 {
+		return false
+	}
+	for _, ip := range publicIPs {
+		if strings.TrimSpace(ip) == "" {
+			continue
+		}
+		if strings.TrimSpace(ip) == strings.TrimSpace(fp.IPAddress) {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateAllRiskScores 更新所有用户的风险评分

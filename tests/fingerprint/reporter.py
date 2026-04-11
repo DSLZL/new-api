@@ -14,6 +14,7 @@ class FingerprintReporter:
     COMPARE_PATH = "/api/admin/fingerprint/compare"
     LINKS_PATH   = "/api/admin/fingerprint/links"
     ASSOC_PATH   = "/api/admin/fingerprint/user/{uid}/associations"
+    RESET_PATH   = "/api/admin/fingerprint/user/{uid}/reset-test-data"
     SELF_PATH    = "/api/user/self"
 
     def __init__(self, base_url: str = BASE_URL):
@@ -170,6 +171,23 @@ class FingerprintReporter:
                     "page":           page,
                     "page_size":      50,
                 },
+                timeout=10,
+            )
+            return resp.json()
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def reset_user_test_data(self, uid: int, admin_token: str, admin_id: int = 1) -> dict:
+        """POST /api/admin/fingerprint/user/:id/reset-test-data"""
+        headers = {
+            "Authorization": admin_token,
+            "Content-Type":  "application/json",
+            "New-Api-User":  str(admin_id),
+        }
+        try:
+            resp = self.session.post(
+                self.base_url + self.RESET_PATH.format(uid=uid),
+                headers=headers,
                 timeout=10,
             )
             return resp.json()

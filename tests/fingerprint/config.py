@@ -24,22 +24,44 @@ USER_IDS = [
 ADMIN_TOKEN = os.getenv("TEST_ADMIN_TOKEN", "")
 ADMIN_ID    = int(os.getenv("TEST_ADMIN_ID", "1"))
 
-# ── 各场景预期置信度阈值 ──────────────────────────────────────────────
+# ── 各场景预期置信度阈值（Final 六类）────────────────────────────────
 THRESHOLDS = {
-    # 场景A: 同设备两账号 → 强关联
-    "scenario_a": {"min": 0.80, "desc": "同设备双账号（相同Canvas/WebGL/LocalDeviceID）"},
-    # 场景B: 同设备换VPN → 设备哈希仍能关联
-    "scenario_b": {"min": 0.65, "desc": "同设备VPN换IP（相同Canvas/WebGL）"},
-    # 场景C: 无痕模式，共享IP → IP关联
-    "scenario_c": {"min": 0.35, "desc": "无痕模式共享IP（无Canvas/LocalDevice）"},
-    # 场景D: 完全不同设备 → 不应关联
-    "scenario_d": {"max": 0.30, "desc": "完全不同设备和网络"},
+    # 场景1: 同设备高分
+    "scenario_1_same_device_high": {
+        "min": 0.80,
+        "desc": "同设备 + 同浏览器 + 不同账号，预期高分",
+    },
+    # 场景2: 隐身中高分（靠 JA4 + 行为）
+    "scenario_2_incognito_medium_high": {
+        "min": 0.55,
+        "desc": "同设备隐身模式，预期中高分（JA4 + 行为）",
+    },
+    # 场景3: VPN中高分（靠 WebRTC + 设备指纹）
+    "scenario_3_vpn_medium_high": {
+        "min": 0.60,
+        "desc": "同设备 VPN 切换 IP，预期中高分（WebRTC + 设备指纹）",
+    },
+    # 场景4: 清缓存中高分（靠 ETag + 设备指纹）
+    "scenario_4_clear_cache_medium_high": {
+        "min": 0.60,
+        "desc": "同设备清缓存后，预期中高分（ETag + 设备指纹）",
+    },
+    # 场景5: 不同设备同一人中分（靠行为 + 时序）
+    "scenario_5_same_person_diff_device_medium": {
+        "min": 0.35,
+        "desc": "不同设备同一人，预期中分（行为 + 时序）",
+    },
+    # 场景6: 完全不同低分
+    "scenario_6_completely_different_low": {
+        "max": 0.30,
+        "desc": "完全不同用户，预期低分",
+    },
 }
 
 # ── 模拟IP（直接写入 X-Real-IP）─────────────────────────────────────
 SIM_IPS = {
-    "home":       "203.0.113.10",     # 用户A/B/C的家庭IP
-    "vpn":        "198.51.100.42",    # 用户C的VPN出口IP
-    "incognito":  "203.0.113.10",     # 用户D：无痕但同IP
-    "stranger":   "192.0.2.99",       # 用户E：完全不同IP
+    "home": "203.0.113.10",
+    "vpn": "198.51.100.42",
+    "alt_home": "203.0.113.77",
+    "stranger": "192.0.2.99",
 }

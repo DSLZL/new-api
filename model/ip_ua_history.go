@@ -15,12 +15,15 @@ type IPUAHistory struct {
 	UserAgent string `json:"user_agent" gorm:"type:text;default:''"`
 
 	// IP情报
-	IPCountry   string  `json:"ip_country" gorm:"type:varchar(10);default:''"`
-	IPRegion    string  `json:"ip_region" gorm:"type:varchar(50);default:''"`
-	IPCity      string  `json:"ip_city" gorm:"type:varchar(50);default:''"`
-	IPISP       string  `json:"ip_isp" gorm:"type:varchar(100);default:''"`
-	IPType      string  `json:"ip_type" gorm:"type:varchar(20);default:''"`
-	IPRiskScore float32 `json:"ip_risk_score" gorm:"default:0"`
+	IPCountry    string  `json:"ip_country" gorm:"type:varchar(10);default:''"`
+	IPRegion     string  `json:"ip_region" gorm:"type:varchar(50);default:''"`
+	IPCity       string  `json:"ip_city" gorm:"type:varchar(50);default:''"`
+	IPISP        string  `json:"ip_isp" gorm:"type:varchar(100);default:''"`
+	IPType       string  `json:"ip_type" gorm:"type:varchar(20);default:''"`
+	ASN          int     `json:"asn" gorm:"default:0;index"`
+	ASNOrg       string  `json:"asn_org" gorm:"type:varchar(160);default:''"`
+	IsDatacenter bool    `json:"is_datacenter" gorm:"default:false"`
+	IPRiskScore  float32 `json:"ip_risk_score" gorm:"default:0"`
 
 	// UA解析
 	UABrowser    string `json:"ua_browser" gorm:"type:varchar(50);default:''"`
@@ -44,21 +47,24 @@ func (IPUAHistory) TableName() string {
 func UpsertIPUAHistory(record *IPUAHistory) error {
 	if common.UsingPostgreSQL {
 		return DB.Exec(`
-			INSERT INTO ip_ua_history 
-				(user_id, ip_address, user_agent, ip_country, ip_region, ip_city, ip_isp, ip_type, ip_risk_score,
+			INSERT INTO ip_ua_history
+				(user_id, ip_address, user_agent, ip_country, ip_region, ip_city, ip_isp, ip_type, asn, asn_org, is_datacenter, ip_risk_score,
 				 ua_browser, ua_browser_ver, ua_os, ua_os_ver, ua_device, endpoint, request_count, first_seen, last_seen)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())
-			ON CONFLICT (user_id, ip_address, ua_browser, ua_os) 
-			DO UPDATE SET 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW())
+			ON CONFLICT (user_id, ip_address, ua_browser, ua_os)
+			DO UPDATE SET
 				request_count = ip_ua_history.request_count + 1,
 				last_seen = NOW(),
 				user_agent = EXCLUDED.user_agent,
 				endpoint = EXCLUDED.endpoint,
 				ip_type = COALESCE(NULLIF(EXCLUDED.ip_type, ''), ip_ua_history.ip_type),
+				asn = CASE WHEN EXCLUDED.asn > 0 THEN EXCLUDED.asn ELSE ip_ua_history.asn END,
+				asn_org = COALESCE(NULLIF(EXCLUDED.asn_org, ''), ip_ua_history.asn_org),
+				is_datacenter = EXCLUDED.is_datacenter,
 				ip_risk_score = CASE WHEN EXCLUDED.ip_risk_score > 0 THEN EXCLUDED.ip_risk_score ELSE ip_ua_history.ip_risk_score END
 		`,
 			record.UserID, record.IPAddress, record.UserAgent,
-			record.IPCountry, record.IPRegion, record.IPCity, record.IPISP, record.IPType, record.IPRiskScore,
+			record.IPCountry, record.IPRegion, record.IPCity, record.IPISP, record.IPType, record.ASN, record.ASNOrg, record.IsDatacenter, record.IPRiskScore,
 			record.UABrowser, record.UABrowserVer, record.UAOS, record.UAOSVer, record.UADevice,
 			record.Endpoint,
 		).Error
@@ -73,12 +79,39 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 		// 不存在，创建
 		return DB.Create(record).Error
 	}
+
+	ipType := existing.IPType
+	if record.IPType != "" {
+		ipType = record.IPType
+	}
+	asn := existing.ASN
+	if record.ASN > 0 {
+		asn = record.ASN
+	}
+	asnOrg := existing.ASNOrg
+	if record.ASNOrg != "" {
+		asnOrg = record.ASNOrg
+	}
+	isDatacenter := existing.IsDatacenter
+	if record.ASN > 0 || record.ASNOrg != "" || record.IsDatacenter {
+		isDatacenter = record.IsDatacenter
+	}
+	ipRiskScore := existing.IPRiskScore
+	if record.IPRiskScore > 0 {
+		ipRiskScore = record.IPRiskScore
+	}
+
 	// 存在，更新
 	return DB.Model(&existing).Updates(map[string]interface{}{
 		"request_count": existing.RequestCount + 1,
 		"last_seen":     time.Now(),
 		"user_agent":    record.UserAgent,
 		"endpoint":      record.Endpoint,
+		"ip_type":       ipType,
+		"asn":           asn,
+		"asn_org":       asnOrg,
+		"is_datacenter": isDatacenter,
+		"ip_risk_score": ipRiskScore,
 	}).Error
 }
 

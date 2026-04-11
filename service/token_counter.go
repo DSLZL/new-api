@@ -108,7 +108,7 @@ func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, strea
 			// file type
 			return 3 * baseTokens, nil
 		}
-		return 0, errors.New(fmt.Sprintf("fail to decode image config: %s", fileMeta.GetIdentifier()))
+		return 0, fmt.Errorf("fail to decode image config: %s", fileMeta.GetIdentifier())
 	}
 
 	width := config.Width
@@ -139,9 +139,7 @@ func getImageToken(c *gin.Context, fileMeta *types.FileMeta, model string, strea
 			patchesW := math.Ceil(wScaled / 32.0)
 			patchesH := math.Ceil(hScaled / 32.0)
 			imageTokens := int(patchesW * patchesH)
-			if imageTokens > 1536 {
-				imageTokens = 1536
-			}
+			imageTokens = min(imageTokens, 1536)
 			return int(math.Round(float64(imageTokens) * multiplier)), nil
 		}
 		// below cap
@@ -342,7 +340,7 @@ func CountTokenRealtime(info *relaycommon.RelayInfo, request dto.RealtimeEvent, 
 	case dto.RealtimeEventTypeResponseDone:
 		// count tools token
 		if !info.IsFirstRequest {
-			if info.RealtimeTools != nil && len(info.RealtimeTools) > 0 {
+			if len(info.RealtimeTools) > 0 {
 				for _, tool := range info.RealtimeTools {
 					toolTokens := CountTokenInput(tool, model)
 					textToken += 8
@@ -359,17 +357,17 @@ func CountTokenInput(input any, model string) int {
 	case string:
 		return CountTextToken(v, model)
 	case []string:
-		text := ""
+		var b strings.Builder
 		for _, s := range v {
-			text += s
+			b.WriteString(s)
 		}
-		return CountTextToken(text, model)
-	case []interface{}:
-		text := ""
+		return CountTextToken(b.String(), model)
+	case []any:
+		var b strings.Builder
 		for _, item := range v {
-			text += fmt.Sprintf("%v", item)
+			_, _ = fmt.Fprintf(&b, "%v", item)
 		}
-		return CountTextToken(text, model)
+		return CountTextToken(b.String(), model)
 	}
 	return CountTokenInput(fmt.Sprintf("%v", input), model)
 }

@@ -41,12 +41,13 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 		}
 		if claudeRequest.Thinking != nil {
 			var reasoning openrouter.RequestReasoning
-			if claudeRequest.Thinking.Type == "enabled" {
+			switch claudeRequest.Thinking.Type {
+			case "enabled":
 				reasoning = openrouter.RequestReasoning{
 					Enabled:   true,
 					MaxTokens: claudeRequest.Thinking.GetBudgetTokens(),
 				}
-			} else if claudeRequest.Thinking.Type == "adaptive" {
+			case "adaptive":
 				reasoning = openrouter.RequestReasoning{
 					Enabled: true,
 				}
@@ -118,13 +119,13 @@ func ClaudeToOpenAIRequest(claudeRequest dto.ClaudeRequest, info *relaycommon.Re
 					}
 					openAIMessage.SetMediaContent(systemMediaMessages)
 				} else {
-					systemStr := ""
+					var builder strings.Builder
 					for _, system := range systems {
 						if system.Text != nil {
-							systemStr += *system.Text
+							builder.WriteString(*system.Text)
 						}
 					}
-					openAIMessage.SetStringContent(systemStr)
+					openAIMessage.SetStringContent(builder.String())
 				}
 				openAIMessages = append(openAIMessages, openAIMessage)
 			}
@@ -326,7 +327,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 					Id:    toolCall.ID,
 					Type:  "tool_use",
 					Name:  toolCall.Function.Name,
-					Input: map[string]interface{}{},
+					Input: map[string]any{},
 				},
 			}
 			resp.SetIndex(0)
@@ -487,7 +488,7 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 							Id:    toolCall.ID,
 							Type:  "tool_use",
 							Name:  toolCall.Function.Name,
-							Input: map[string]interface{}{},
+							Input: map[string]any{},
 						},
 					})
 				}
@@ -599,7 +600,7 @@ func ResponseOpenAI2Claude(openAIResponse *dto.OpenAITextResponse, info *relayco
 				claudeContent.Type = "tool_use"
 				claudeContent.Id = toolUse.ID
 				claudeContent.Name = toolUse.Function.Name
-				var mapParams map[string]interface{}
+				var mapParams map[string]any
 				if err := common.Unmarshal([]byte(toolUse.Function.Arguments), &mapParams); err == nil {
 					claudeContent.Input = mapParams
 				} else {
@@ -625,7 +626,7 @@ func stopReasonOpenAI2Claude(reason string) string {
 	return reasonmap.OpenAIFinishReasonToClaudeStopReason(reason)
 }
 
-func toJSONString(v interface{}) string {
+func toJSONString(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "{}"
@@ -846,13 +847,13 @@ func ResponseOpenAI2Gemini(openAIResponse *dto.OpenAITextResponse, info *relayco
 		if len(toolCalls) > 0 {
 			for _, toolCall := range toolCalls {
 				// 解析参数
-				var args map[string]interface{}
+				var args map[string]any
 				if toolCall.Function.Arguments != "" {
 					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-						args = map[string]interface{}{"arguments": toolCall.Function.Arguments}
+						args = map[string]any{"arguments": toolCall.Function.Arguments}
 					}
 				} else {
-					args = make(map[string]interface{})
+					args = make(map[string]any)
 				}
 
 				part := dto.GeminiPart{
@@ -887,7 +888,7 @@ func StreamResponseOpenAI2Gemini(openAIResponse *dto.ChatCompletionsStreamRespon
 	hasContent := false
 	hasFinishReason := false
 	for _, choice := range openAIResponse.Choices {
-		if len(choice.Delta.GetContentString()) > 0 || (choice.Delta.ToolCalls != nil && len(choice.Delta.ToolCalls) > 0) {
+		if len(choice.Delta.GetContentString()) > 0 || len(choice.Delta.ToolCalls) > 0 {
 			hasContent = true
 		}
 		if choice.FinishReason != nil {
@@ -949,13 +950,13 @@ func StreamResponseOpenAI2Gemini(openAIResponse *dto.ChatCompletionsStreamRespon
 		if choice.Delta.ToolCalls != nil {
 			for _, toolCall := range choice.Delta.ToolCalls {
 				// 解析参数
-				var args map[string]interface{}
+				var args map[string]any
 				if toolCall.Function.Arguments != "" {
 					if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &args); err != nil {
-						args = map[string]interface{}{"arguments": toolCall.Function.Arguments}
+						args = map[string]any{"arguments": toolCall.Function.Arguments}
 					}
 				} else {
-					args = make(map[string]interface{})
+					args = make(map[string]any)
 				}
 
 				part := dto.GeminiPart{

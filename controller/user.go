@@ -132,28 +132,50 @@ func Logout(c *gin.Context) {
 
 // ─── 注册时客户端指纹数据结构 ───
 type ClientFingerprintData struct {
-	CanvasHash    string  `json:"canvas_hash"`
-	WebGLHash     string  `json:"webgl_hash"`
-	WebGLVendor   string  `json:"webgl_vendor"`
-	WebGLRenderer string  `json:"webgl_renderer"`
-	AudioHash     string  `json:"audio_hash"`
-	FontsHash     string  `json:"fonts_hash"`
-	FontsList     string  `json:"fonts_list"`
-	ScreenWidth   int     `json:"screen_width"`
-	ScreenHeight  int     `json:"screen_height"`
-	ColorDepth    int     `json:"color_depth"`
-	PixelRatio    float32 `json:"pixel_ratio"`
-	CPUCores      int     `json:"cpu_cores"`
-	DeviceMemory  float32 `json:"device_memory"`
-	MaxTouch      int     `json:"max_touch"`
-	Timezone      string  `json:"timezone"`
-	TZOffset      int     `json:"tz_offset"`
-	Languages     string  `json:"languages"`
-	Platform      string  `json:"platform"`
-	DoNotTrack    string  `json:"do_not_track"`
-	CookieEnabled bool    `json:"cookie_enabled"`
-	LocalDeviceID string  `json:"local_device_id"`
-	CompositeHash string  `json:"composite_hash"`
+	CanvasHash            string   `json:"canvas_hash"`
+	WebGLHash             string   `json:"webgl_hash"`
+	WebGLDeepHash         string   `json:"webgl_deep_hash"`
+	ClientRectsHash       string   `json:"client_rects_hash"`
+	WebGLVendor           string   `json:"webgl_vendor"`
+	WebGLRenderer         string   `json:"webgl_renderer"`
+	MediaDevicesHash      string   `json:"media_devices_hash"`
+	MediaDeviceCount      string   `json:"media_device_count"`
+	MediaDeviceGroupHash  string   `json:"media_device_group_hash"`
+	MediaDeviceTotal      int      `json:"media_device_total"`
+	SpeechVoicesHash      string   `json:"speech_voices_hash"`
+	SpeechVoiceCount      int      `json:"speech_voice_count"`
+	SpeechLocalVoiceCount int      `json:"speech_local_voice_count"`
+	AudioHash             string   `json:"audio_hash"`
+	FontsHash             string   `json:"fonts_hash"`
+	FontsList             string   `json:"fonts_list"`
+	ScreenWidth           int      `json:"screen_width"`
+	ScreenHeight          int      `json:"screen_height"`
+	ColorDepth            int      `json:"color_depth"`
+	PixelRatio            float32  `json:"pixel_ratio"`
+	CPUCores              int      `json:"cpu_cores"`
+	DeviceMemory          float32  `json:"device_memory"`
+	MaxTouch              int      `json:"max_touch"`
+	Timezone              string   `json:"timezone"`
+	TZOffset              int      `json:"tz_offset"`
+	Languages             string   `json:"languages"`
+	Platform              string   `json:"platform"`
+	DoNotTrack            string   `json:"do_not_track"`
+	CookieEnabled         bool     `json:"cookie_enabled"`
+	LocalDeviceID         string   `json:"local_device_id"`
+	PersistentID          string   `json:"persistent_id"`
+	PersistentIDSource    string   `json:"id_source"`
+	ETagID                string   `json:"etag_id"`
+	WebRTCLocalIPs        []string `json:"webrtc_local_ips"`
+	WebRTCPublicIPs       []string `json:"webrtc_public_ips"`
+	CompositeHash         string   `json:"composite_hash"`
+	DNSResolverIP         string   `json:"dns_resolver_ip"`
+	DNSProbeID            string   `json:"dns_probe_id"`
+	SessionID             string   `json:"session_id"`
+	SessionStartAt        int64    `json:"session_start_at"`
+	SessionEndAt          int64    `json:"session_end_at"`
+	HTTPHeaderHash        string   `json:"http_header_hash"`
+	Keystroke             *KeystrokeFingerprintRequest `json:"keystroke,omitempty"`
+	Mouse                 *MouseFingerprintRequest     `json:"mouse,omitempty"`
 }
 
 func Register(c *gin.Context) {
@@ -167,23 +189,53 @@ func Register(c *gin.Context) {
 	}
 
 	// ★ 读取完整请求体，以便分别解析 user 字段和 fingerprint 字段
+	const registerRequestBodyLimit = 1 << 20 // 1 MiB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, registerRequestBodyLimit)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 
 	var user model.User
-	if err := json.Unmarshal(bodyBytes, &user); err != nil {
+	if err := common.Unmarshal(bodyBytes, &user); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 
-	// ★ 提取客户端指纹（可选字段，不影响注册流程）
+	// ★ 提取客户端指纹。fingerprint 字段本身仍是可选的，但一旦提供就必须通过严格校验。
 	var fpWrapper struct {
-		Fingerprint *ClientFingerprintData `json:"fingerprint"`
+		Fingerprint json.RawMessage `json:"fingerprint"`
 	}
-	_ = json.Unmarshal(bodyBytes, &fpWrapper)
+	if err := common.Unmarshal(bodyBytes, &fpWrapper); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	behaviorEnabled := common.FingerprintEnableBehaviorAnalysis
+	var clientFingerprint *ClientFingerprintData
+	if len(fpWrapper.Fingerprint) > 0 && string(fpWrapper.Fingerprint) != "null" {
+		var parsedFingerprint ClientFingerprintData
+		if err := common.DecodeJsonStrict(strings.NewReader(string(fpWrapper.Fingerprint)), &parsedFingerprint); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		if behaviorEnabled {
+			if err := ValidateKeystrokeFingerprintRequest(parsedFingerprint.Keystroke); err != nil {
+				common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+				return
+			}
+			if err := ValidateMouseFingerprintRequest(parsedFingerprint.Mouse); err != nil {
+				common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+				return
+			}
+		}
+		clientFingerprint = &parsedFingerprint
+	}
 
 	if err := common.Validate.Struct(&user); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
@@ -268,8 +320,10 @@ func Register(c *gin.Context) {
 			realIP = middleware.ExtractRealIP(c)
 		}
 		userAgent := c.GetHeader("User-Agent")
+		ja4 := c.GetString("ja4_fingerprint")
+		httpHeaderFP := c.GetString("http_header_fingerprint")
 		uid := insertedUser.Id
-		clientFP := fpWrapper.Fingerprint
+		clientFP := clientFingerprint
 
 		go func() {
 			defer func() {
@@ -291,6 +345,9 @@ func Register(c *gin.Context) {
 				IPCity:       ipInfo.City,
 				IPISP:        ipInfo.ISP,
 				IPType:       ipInfo.Type,
+				ASN:          ipInfo.ASN,
+				ASNOrg:       ipInfo.ASNOrg,
+				IsDatacenter: ipInfo.IsDatacenter,
 				IPRiskScore:  float32(ipInfo.Risk),
 				UABrowser:    parsedUA.Browser,
 				UABrowserVer: parsedUA.BrowserVer,
@@ -303,48 +360,42 @@ func Register(c *gin.Context) {
 
 			// 2. 构建完整指纹记录（服务端采集 + 客户端采集）
 			fp := &model.Fingerprint{
-				UserID:       uid,
-				IPAddress:    realIP,
-				IPCountry:    ipInfo.Country,
-				IPRegion:     ipInfo.Region,
-				IPCity:       ipInfo.City,
-				IPISP:        ipInfo.ISP,
-				IPType:       ipInfo.Type,
-				UserAgent:    userAgent,
-				UABrowser:    parsedUA.Browser,
-				UABrowserVer: parsedUA.BrowserVer,
-				UAOS:         parsedUA.OS,
-				UAOSVer:      parsedUA.OSVer,
-				UADeviceType: parsedUA.DeviceType,
+				UserID:         uid,
+				IPAddress:      realIP,
+				IPCountry:      ipInfo.Country,
+				IPRegion:       ipInfo.Region,
+				IPCity:         ipInfo.City,
+				IPISP:          ipInfo.ISP,
+				IPType:         ipInfo.Type,
+				ASN:            ipInfo.ASN,
+				ASNOrg:         ipInfo.ASNOrg,
+				IsDatacenter:   ipInfo.IsDatacenter,
+				UserAgent:      userAgent,
+				UABrowser:      parsedUA.Browser,
+				UABrowserVer:   parsedUA.BrowserVer,
+				UAOS:           parsedUA.OS,
+				UAOSVer:        parsedUA.OSVer,
+				JA4:            ja4,
+				HTTPHeaderHash: httpHeaderFP,
+				UADeviceType:   parsedUA.DeviceType,
 			}
 
 			// ★ 合并客户端浏览器指纹（注册按钮点击时前端采集并随请求发送）
-			if clientFP != nil {
-				fp.CanvasHash = clientFP.CanvasHash
-				fp.WebGLHash = clientFP.WebGLHash
-				fp.WebGLVendor = clientFP.WebGLVendor
-				fp.WebGLRenderer = clientFP.WebGLRenderer
-				fp.AudioHash = clientFP.AudioHash
-				fp.FontsHash = clientFP.FontsHash
-				fp.FontsList = clientFP.FontsList
-				fp.ScreenWidth = clientFP.ScreenWidth
-				fp.ScreenHeight = clientFP.ScreenHeight
-				fp.ColorDepth = clientFP.ColorDepth
-				fp.PixelRatio = clientFP.PixelRatio
-				fp.CPUCores = clientFP.CPUCores
-				fp.DeviceMemory = clientFP.DeviceMemory
-				fp.MaxTouch = clientFP.MaxTouch
-				fp.Timezone = clientFP.Timezone
-				fp.TZOffset = clientFP.TZOffset
-				fp.Languages = clientFP.Languages
-				fp.Platform = clientFP.Platform
-				fp.DoNotTrack = clientFP.DoNotTrack
-				fp.CookieEnabled = clientFP.CookieEnabled
-				fp.LocalDeviceID = clientFP.LocalDeviceID
-				fp.CompositeHash = clientFP.CompositeHash
+			applyClientFingerprintData(fp, clientFP)
+
+			applyFingerprintFeatureSwitches(fp)
+			_ = fp.Insert()
+
+			profile := buildUserDeviceProfileFromFingerprint(uid, realIP, parsedUA, fp)
+			if profile != nil {
+				_ = model.UpsertDeviceProfile(profile)
 			}
 
-			_ = fp.Insert()
+			if behaviorEnabled && clientFP != nil {
+				if err := upsertBehaviorProfiles(uid, clientFP.Keystroke, clientFP.Mouse); err != nil {
+					common.SysLog(fmt.Sprintf("register behavior profile upsert failed: %v", err))
+				}
+			}
 
 			// 3. 触发关联分析
 			service.AnalyzeAccountLinks(uid, fp)

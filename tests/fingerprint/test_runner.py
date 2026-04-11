@@ -113,12 +113,13 @@ def _fmt(scenario: str, uid_a: int, uid_b: int, data: dict | None, key: str) -> 
 # 测试场景
 # ──────────────────────────────────────────────────────────────────────
 
-def run_scenario_a() -> dict:
-    """场景A: 同设备双账号 → 预期 confidence >= 0.80"""
-    console.rule("[bold cyan]场景 A: 同设备双账号[/bold cyan]")
-    console.print(f"  {THRESHOLDS['scenario_a']['desc']}")
+def run_scenario_1() -> dict:
+    """场景1: 同设备高分 → 预期 confidence >= 0.80"""
+    key = "scenario_1_same_device_high"
+    console.rule("[bold cyan]场景 1: 同设备高分[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
 
-    profiles = scenarios.scenario_a(sim_ip=SIM_IPS["home"])
+    profiles = scenarios.scenario_1_same_device_high(sim_ip=SIM_IPS["home"])
     uid_a, uid_b = _get_uid(0), _get_uid(1)
     console.print(f"  用户A: {uid_a}  用户B: {uid_b}")
 
@@ -127,15 +128,34 @@ def run_scenario_a() -> dict:
 
     console.print("  等待关联分析...")
     data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
-    return _fmt("A", uid_a, uid_b, data, "scenario_a")
+    return _fmt("1", uid_a, uid_b, data, key)
 
 
-def run_scenario_b() -> dict:
-    """场景B: VPN 换IP，Canvas/WebGL 相同 → 预期 confidence >= 0.65"""
-    console.rule("[bold cyan]场景 B: VPN 换 IP[/bold cyan]")
-    console.print(f"  {THRESHOLDS['scenario_b']['desc']}")
+def run_scenario_2() -> dict:
+    """场景2: 同设备隐身中高分 → 预期 confidence >= 0.55"""
+    key = "scenario_2_incognito_medium_high"
+    console.rule("[bold cyan]场景 2: 同设备隐身中高分[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
 
-    profiles = scenarios.scenario_b(
+    profiles = scenarios.scenario_2_incognito_medium_high(sim_ip=SIM_IPS["home"])
+    uid_a, uid_b = _get_uid(0), _get_uid(3)
+    console.print(f"  用户A: {uid_a}  用户D: {uid_b}")
+
+    _report(profiles[0], 0)
+    _report(profiles[1], 3)
+
+    console.print("  等待关联分析...")
+    data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
+    return _fmt("2", uid_a, uid_b, data, key)
+
+
+def run_scenario_3() -> dict:
+    """场景3: 同设备 VPN 中高分 → 预期 confidence >= 0.60"""
+    key = "scenario_3_vpn_medium_high"
+    console.rule("[bold cyan]场景 3: VPN 中高分[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
+
+    profiles = scenarios.scenario_3_vpn_medium_high(
         ip_normal=SIM_IPS["home"],
         ip_vpn=SIM_IPS["vpn"],
     )
@@ -147,69 +167,85 @@ def run_scenario_b() -> dict:
 
     console.print("  等待关联分析...")
     data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
-    return _fmt("B", uid_a, uid_b, data, "scenario_b")
-
-
-def run_scenario_c() -> dict:
-    """场景C: 无痕模式 + 共享IP → 预期 confidence >= 0.35"""
-    console.rule("[bold cyan]场景 C: 无痕模式 + 共享 IP[/bold cyan]")
-    console.print(f"  {THRESHOLDS['scenario_c']['desc']}")
-
-    profiles = scenarios.scenario_c(sim_ip=SIM_IPS["home"])
-    uid_a, uid_b = _get_uid(0), _get_uid(3)
-    console.print(f"  用户A: {uid_a}  用户D: {uid_b}")
-
-    _report(profiles[0], 0)
-    _report(profiles[1], 3)
-
-    console.print("  等待关联分析...")
-    data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
-    return _fmt("C", uid_a, uid_b, data, "scenario_c")
+    return _fmt("3", uid_a, uid_b, data, key)
 
 
 def _purge_fingerprints_for_users(*user_ids: int) -> None:
-    """直接清除指定用户的指纹和关联记录（仅用于测试隔离）"""
-    import sqlite3, glob as _glob
-    db_path = None
-    # 在项目根目录找 .db 文件
-    for p in _glob.glob("../../*.db") + _glob.glob("../*.db") + _glob.glob("*.db"):
-        db_path = p
-        break
-    if not db_path:
-        console.print("[yellow]警告: 找不到 SQLite DB，跳过清理[/yellow]")
-        return
-    conn = sqlite3.connect(db_path)
+    """通过管理端 API 清除测试用户指纹/关联/风险缓存（跨数据库）。"""
     for uid in user_ids:
-        conn.execute("DELETE FROM user_fingerprints WHERE user_id = ?", (uid,))
-        conn.execute("DELETE FROM account_links WHERE user_id_a = ? OR user_id_b = ?", (uid, uid))
-    conn.commit()
-    conn.close()
-    console.print(f"  [dim]已清除用户 {list(user_ids)} 的历史指纹记录[/dim]")
+        result = reporter.reset_user_test_data(uid, _admin(), admin_id=ADMIN_ID)
+        ok = result.get("success", False)
+        if not ok:
+            msg = result.get("message", "?")
+            console.print(f"[yellow]警告: 清理用户 {uid} 失败: {msg}[/yellow]")
+        else:
+            console.print(f"  [dim]已清除用户 {uid} 的历史指纹记录[/dim]")
 
 
-def run_scenario_d() -> dict:
-    """场景D: 完全不同设备 → 预期 confidence <= 0.30"""
-    console.rule("[bold cyan]场景 D: 完全不同设备（负例）[/bold cyan]")
-    console.print(f"  {THRESHOLDS['scenario_d']['desc']}")
+def run_scenario_4() -> dict:
+    """场景4: 清缓存中高分 → 预期 confidence >= 0.60"""
+    key = "scenario_4_clear_cache_medium_high"
+    console.rule("[bold cyan]场景 4: 清缓存中高分[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
 
     uid_a, uid_b = _get_uid(0), _get_uid(1)
     console.print(f"  用户A: {uid_a}  用户B: {uid_b}")
 
-    # 清除场景A留下的历史关联，保证测试隔离
     _purge_fingerprints_for_users(uid_a, uid_b)
-
-    profiles = scenarios.scenario_d(
-        ip_x=SIM_IPS["home"],
-        ip_y=SIM_IPS["stranger"],
-    )
+    profiles = scenarios.scenario_4_clear_cache(sim_ip=SIM_IPS["home"])
 
     _report(profiles[0], 0)
     _report(profiles[1], 1)
 
-    # 等待短暂让后台处理
-    time.sleep(2)
-    data = reporter.compare(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
-    return _fmt("D", uid_a, uid_b, data, "scenario_d")
+    console.print("  等待关联分析...")
+    data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
+    return _fmt("4", uid_a, uid_b, data, key)
+
+
+def run_scenario_5() -> dict:
+    """场景5: 不同设备同一人中分（行为+时序）→ 预期 confidence >= 0.35"""
+    key = "scenario_5_same_person_diff_device_medium"
+    console.rule("[bold cyan]场景 5: 不同设备同一人中分[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
+
+    uid_a, uid_b = _get_uid(0), _get_uid(2)
+    console.print(f"  用户A: {uid_a}  用户C: {uid_b}")
+
+    _purge_fingerprints_for_users(uid_a, uid_b)
+    profiles = scenarios.scenario_5_same_person_diff_device(
+        ip_a=SIM_IPS["home"],
+        ip_b=SIM_IPS["alt_home"],
+    )
+
+    _report(profiles[0], 0)
+    _report(profiles[1], 2)
+
+    console.print("  等待关联分析...")
+    data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
+    return _fmt("5", uid_a, uid_b, data, key)
+
+
+def run_scenario_6() -> dict:
+    """场景6: 完全不同低分 → 预期 confidence <= 0.30"""
+    key = "scenario_6_completely_different_low"
+    console.rule("[bold cyan]场景 6: 完全不同低分（负例）[/bold cyan]")
+    console.print(f"  {THRESHOLDS[key]['desc']}")
+
+    uid_a, uid_b = _get_uid(1), _get_uid(3)
+    console.print(f"  用户B: {uid_a}  用户D: {uid_b}")
+
+    _purge_fingerprints_for_users(uid_a, uid_b)
+    profiles = scenarios.scenario_6_completely_different(
+        ip_x=SIM_IPS["home"],
+        ip_y=SIM_IPS["stranger"],
+    )
+
+    _report(profiles[0], 1)
+    _report(profiles[1], 3)
+
+    console.print("  等待关联分析...")
+    data = reporter.wait_for_link(uid_a, uid_b, _admin(), admin_id=ADMIN_ID)
+    return _fmt("6", uid_a, uid_b, data, key)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -248,17 +284,19 @@ def main() -> None:
     console.rule("[bold magenta]new-api 指纹识别系统集成测试[/bold magenta]")
     console.print(f"  目标服务: [bold]{BASE_URL}[/bold]")
     if seed_only:
-        console.print("  模式: [yellow]仅填充数据（--seed-only），跳过场景D[/yellow]")
+        console.print("  模式: [yellow]仅填充数据（--seed-only），跳过场景6负例[/yellow]")
     console.print()
 
     preflight()
 
     results = []
-    results.append(run_scenario_a())
-    results.append(run_scenario_b())
-    results.append(run_scenario_c())
+    results.append(run_scenario_1())
+    results.append(run_scenario_2())
+    results.append(run_scenario_3())
+    results.append(run_scenario_4())
+    results.append(run_scenario_5())
     if not seed_only:
-        results.append(run_scenario_d())
+        results.append(run_scenario_6())
 
     # ── 汇总表 ──
     console.print()
@@ -271,8 +309,16 @@ def main() -> None:
     tbl.add_column("结果",   justify="center", width=8)
 
     all_pass = True
+    scenario_key_map = {
+        "1": "scenario_1_same_device_high",
+        "2": "scenario_2_incognito_medium_high",
+        "3": "scenario_3_vpn_medium_high",
+        "4": "scenario_4_clear_cache_medium_high",
+        "5": "scenario_5_same_person_diff_device_medium",
+        "6": "scenario_6_completely_different_low",
+    }
     for r in results:
-        key  = f"scenario_{r['scenario'].lower()}"
+        key = scenario_key_map[r["scenario"]]
         desc = THRESHOLDS[key]["desc"]
         color = "green" if r["passed"] else "red"
         icon  = "PASS"  if r["passed"] else "FAIL"
