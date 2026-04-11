@@ -23,6 +23,7 @@ import {
   formatMessageForAPI,
   isValidMessage,
 } from './utils';
+import { resolveNewApiUserHeader } from './api.user-header';
 import axios from 'axios';
 import { MESSAGE_ROLES } from '../constants/playground.constants';
 
@@ -36,7 +37,6 @@ export let API = axios.create({
   },
 });
 
-
 function redirectToOAuthUrl(url, options = {}) {
   const { openInNewTab = false } = options;
   const targetUrl = typeof url === 'string' ? url : url.toString();
@@ -48,7 +48,6 @@ function redirectToOAuthUrl(url, options = {}) {
 
   window.location.assign(targetUrl);
 }
-
 
 function patchAPIInstance(instance) {
   const originalGet = instance.get.bind(instance);
@@ -98,9 +97,11 @@ export function updateAPI() {
 
 API.interceptors.request.use((config) => {
   // 每次请求动态读取最新 userId，避免 incognito/登录后 header 过期
+  const explicitUserId = config.headers?.['New-API-User'];
   const freshId = getUserIdFromLocalStorage();
-  if (freshId) {
-    config.headers['New-API-User'] = freshId;
+  const resolvedUserId = resolveNewApiUserHeader(explicitUserId, freshId);
+  if (resolvedUserId) {
+    config.headers['New-API-User'] = resolvedUserId;
   }
   return config;
 });

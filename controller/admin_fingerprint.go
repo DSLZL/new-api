@@ -22,13 +22,18 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
+
+var fingerprintWeightsUpdateMu sync.Mutex
 
 // FPDashboard GET /api/admin/fingerprint/dashboard
 func FPDashboard(c *gin.Context) {
@@ -115,7 +120,7 @@ func FPReviewLink(c *gin.Context) {
 	}
 
 	var req struct {
-		Action string `json:"action"` // confirmed, ignored, blocked
+		Action string `json:"action"` // confirm, reject, whitelist, ban_newer
 		Note   string `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -161,10 +166,15 @@ func FPGetUserAssociations(c *gin.Context) {
 	// ★ 改动 1: 读取 device_profile_id（来自 user_device_profiles 表）
 	//           替代原来的 fingerprint_id（来自 user_fingerprints 表）
 	// ──────────────────────────────────────────────────────────
-	dpIDStr := c.DefaultQuery("device_profile_id", "0")
-	dpID, parseErr := strconv.ParseInt(dpIDStr, 10, 64)
-	if parseErr != nil {
-		dpID = 0 // 解析失败则忽略，不按指定设备档案过滤
+	dpIDStr := c.Query("device_profile_id")
+	dpID := int64(0)
+	if dpIDStr != "" {
+		var parseErr error
+		dpID, parseErr = strconv.ParseInt(dpIDStr, 10, 64)
+		if parseErr != nil || dpID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid device_profile_id"})
+			return
+		}
 	}
 
 	// ──────────────────────────────────────────────────────────
@@ -178,6 +188,13 @@ func FPGetUserAssociations(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
 				"message": fmt.Sprintf("设备档案 %d 不存在", dpID),
+			})
+			return
+		}
+		if profile.UserID != targetUserID {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("设备档案 %d 不属于用户 %d", dpID, targetUserID),
 			})
 			return
 		}
@@ -196,7 +213,7 @@ func FPGetUserAssociations(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": true,
 			"data": gin.H{
-				"associations": []interface{}{},
+				"associations": []any{},
 				"message":      err.Error(),
 			},
 		})
@@ -207,6 +224,86 @@ func FPGetUserAssociations(c *gin.Context) {
 		"success": true,
 		"data":    result,
 	})
+}
+
+// FPGetWeights GET /api/admin/fingerprint/weights
+func FPGetWeights(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"weights": common.GetWeights(),
+		},
+	})
+}
+
+// FPUpdateWeights PUT /api/admin/fingerprint/weights
+func FPUpdateWeights(c *gin.Context) {
+	var req struct {
+		Weights map[string]float64 `json:"weights"`
+	}
+
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid request"})
+		return
+	}
+	if len(req.Weights) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid request"})
+		return
+	}
+
+	aliasToKey := common.FingerprintWeightAliasToOptionKey()
+	aliases := make([]string, 0, len(req.Weights))
+	for alias := range req.Weights {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+
+	type validatedWeight struct {
+		alias     string
+		optionKey string
+		value     string
+	}
+	validated := make([]validatedWeight, 0, len(aliases))
+
+	for _, alias := range aliases {
+		value := req.Weights[alias]
+		optionKey, ok := aliasToKey[alias]
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": fmt.Sprintf("invalid weight key: %s", alias)})
+			return
+		}
+		if value <= 0 || value > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": fmt.Sprintf("invalid weight value: %s", alias)})
+			return
+		}
+		validated = append(validated, validatedWeight{
+			alias:     alias,
+			optionKey: optionKey,
+			value:     strconv.FormatFloat(value, 'f', -1, 64),
+		})
+	}
+
+	updates := make([]model.OptionUpdate, 0, len(validated))
+	for _, item := range validated {
+		updates = append(updates, model.OptionUpdate{Key: item.optionKey, Value: item.value})
+	}
+
+	fingerprintWeightsUpdateMu.Lock()
+	defer fingerprintWeightsUpdateMu.Unlock()
+
+	if err := model.PersistOptionsAtomically(updates); err != nil {
+		common.SysError("failed to update fingerprint weights: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to update weights"})
+		return
+	}
+
+	common.OptionMapRWMutex.Lock()
+	for _, item := range validated {
+		common.OptionMap[item.optionKey] = item.value
+	}
+	common.OptionMapRWMutex.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"weights": common.GetWeights()}})
 }
 
 // FPGetUserFingerprints GET /api/admin/fingerprint/user/:id/fingerprints
@@ -223,10 +320,104 @@ func FPGetUserFingerprints(c *gin.Context) {
 	}
 
 	fps := model.GetLatestFingerprints(userID, limit)
-	c.JSON(http.StatusOK, gin.H{
+	keystroke := model.GetLatestKeystrokeProfile(userID)
+	mouse := model.GetLatestMouseProfile(userID)
+
+	mapFingerprint := func(fp *model.Fingerprint) gin.H {
+		if fp == nil {
+			return gin.H{}
+		}
+		item := gin.H{
+			"id":                       fp.ID,
+			"user_id":                  fp.UserID,
+			"ip_address":               fp.IPAddress,
+			"ip_country":               fp.IPCountry,
+			"ip_region":                fp.IPRegion,
+			"ip_city":                  fp.IPCity,
+			"ip_isp":                   fp.IPISP,
+			"ip_type":                  fp.IPType,
+			"dns_resolver_ip":          fp.DNSResolverIP,
+			"asn":                      fp.ASN,
+			"asn_org":                  fp.ASNOrg,
+			"is_datacenter":            fp.IsDatacenter,
+			"user_agent":               fp.UserAgent,
+			"ua_browser":               fp.UABrowser,
+			"ua_browser_ver":           fp.UABrowserVer,
+			"ua_os":                    fp.UAOS,
+			"ua_os_ver":                fp.UAOSVer,
+			"ua_device_type":           fp.UADeviceType,
+			"tls_ja3_hash":             fp.TLSJA3Hash,
+			"ja4":                      fp.JA4,
+			"http_header_hash":         fp.HTTPHeaderHash,
+			"http2_fp":                 fp.HTTP2FP,
+			"tcp_os_guess":             fp.TCPOSGuess,
+			"canvas_hash":              fp.CanvasHash,
+			"webgl_hash":               fp.WebGLHash,
+			"webgl_deep_hash":          fp.WebGLDeepHash,
+			"client_rects_hash":        fp.ClientRectsHash,
+			"webgl_vendor":             fp.WebGLVendor,
+			"webgl_renderer":           fp.WebGLRenderer,
+			"media_devices_hash":       fp.MediaDevicesHash,
+			"media_device_count":       fp.MediaDeviceCount,
+			"media_device_group_hash":  fp.MediaDeviceGroupHash,
+			"media_device_total":       fp.MediaDeviceTotal,
+			"speech_voices_hash":       fp.SpeechVoicesHash,
+			"speech_voice_count":       fp.SpeechVoiceCount,
+			"speech_local_voice_count": fp.SpeechLocalVoiceCount,
+			"audio_hash":               fp.AudioHash,
+			"fonts_hash":               fp.FontsHash,
+			"fonts_list":               fp.FontsList,
+			"screen_width":             fp.ScreenWidth,
+			"screen_height":            fp.ScreenHeight,
+			"color_depth":              fp.ColorDepth,
+			"pixel_ratio":              fp.PixelRatio,
+			"cpu_cores":                fp.CPUCores,
+			"device_memory":            fp.DeviceMemory,
+			"max_touch":                fp.MaxTouch,
+			"timezone":                 fp.Timezone,
+			"tz_offset":                fp.TZOffset,
+			"languages":                fp.Languages,
+			"platform":                 fp.Platform,
+			"do_not_track":             fp.DoNotTrack,
+			"cookie_enabled":           fp.CookieEnabled,
+			"local_device_id":          fp.LocalDeviceID,
+			"etag_id":                  fp.ETagID,
+			"persistent_id":            fp.PersistentID,
+			"persistent_id_source":     fp.PersistentIDSource,
+			"webrtc_local_ips":         fp.WebRTCLocalIPs,
+			"webrtc_public_ips":        fp.WebRTCPublicIPs,
+			"composite_hash":           fp.CompositeHash,
+			"page_url":                 fp.PageURL,
+			"session_id":               fp.SessionID,
+			"created_at":               fp.CreatedAt,
+		}
+		return item
+	}
+
+	items := make([]gin.H, 0, len(fps))
+	for _, fp := range fps {
+		items = append(items, mapFingerprint(fp))
+	}
+
+	behaviorProfile := gin.H{}
+	if keystroke != nil && keystroke.SampleCount > 0 {
+		behaviorProfile["typing_speed"] = keystroke.TypingSpeed
+		behaviorProfile["typing_samples"] = keystroke.SampleCount
+	}
+	if mouse != nil && mouse.SampleCount > 0 {
+		behaviorProfile["mouse_avg_speed"] = mouse.AvgSpeed
+		behaviorProfile["mouse_samples"] = mouse.SampleCount
+	}
+
+	response := gin.H{
 		"success": true,
-		"data":    fps,
-	})
+		"data":    items,
+	}
+	if len(behaviorProfile) > 0 {
+		response["behavior_profile"] = behaviorProfile
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // FPGetUserRisk GET /api/admin/fingerprint/user/:id/risk
@@ -292,8 +483,12 @@ func FPCompareUsers(c *gin.Context) {
 		UserA int `json:"user_a"`
 		UserB int `json:"user_b"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil || req.UserA == 0 || req.UserB == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "需要提供 user_a 和 user_b"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "需要提供有效的 user_a 和 user_b"})
+		return
+	}
+	if req.UserA <= 0 || req.UserB <= 0 || req.UserA == req.UserB {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid compare users"})
 		return
 	}
 
@@ -312,25 +507,19 @@ func FPCompareUsers(c *gin.Context) {
 			"message": "一方或双方无指纹数据",
 			"data": gin.H{
 				"confidence": 0,
-				"details":    []interface{}{},
+				"details":    []any{},
 			},
 		})
 		return
 	}
 
-	bestConf := 0.0
-	var bestDetails []service.DimensionMatch
-	bestMatch := 0
-	bestTotal := 0
+	best := service.SimilarityResult{}
 
 	for _, fpA := range fpsA {
 		for _, fpB := range fpsB {
-			conf, details, m, t := service.CompareFingerprints(fpA, fpB, req.UserA, req.UserB)
-			if conf > bestConf {
-				bestConf = conf
-				bestDetails = details
-				bestMatch = m
-				bestTotal = t
+			similarity := service.CalculateSimilarity(fpA, fpB, req.UserA, req.UserB)
+			if similarity.Score > best.Score {
+				best = similarity
 			}
 		}
 	}
@@ -338,12 +527,15 @@ func FPCompareUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
-			"confidence":       bestConf,
-			"match_dimensions": bestMatch,
-			"total_dimensions": bestTotal,
-			"details":          bestDetails,
-			"user_a_info":      getUserBriefByID(req.UserA),
-			"user_b_info":      getUserBriefByID(req.UserB),
+			"confidence":         best.Score,
+			"tier":               best.Tier,
+			"explanation":        best.Explanation,
+			"matched_dimensions": best.MatchedDimensions,
+			"match_dimensions":   best.MatchDimensions,
+			"total_dimensions":   best.TotalDimensions,
+			"details":            best.Details,
+			"user_a_info":        getUserBriefByID(req.UserA),
+			"user_b_info":        getUserBriefByID(req.UserB),
 		},
 	})
 }
@@ -352,6 +544,188 @@ func FPCompareUsers(c *gin.Context) {
 func FPTriggerFullScan(c *gin.Context) {
 	go service.FullLinkScan()
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "全量扫描已触发，将在后台运行"})
+}
+
+// FPResetUserFingerprintTestData POST /api/admin/fingerprint/user/:id/reset-test-data
+// 仅用于集成测试隔离；默认关闭（需开启 FINGERPRINT_TEST_RESET_ENABLED）
+func FPResetUserFingerprintTestData(c *gin.Context) {
+	if !common.FingerprintTestResetEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "fingerprint test reset disabled"})
+		return
+	}
+
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid user id"})
+		return
+	}
+
+	tx := model.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to begin transaction"})
+		return
+	}
+
+	rollback := func(msg string) {
+		_ = tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": msg})
+	}
+
+	if err := tx.Where("user_id = ?", userID).Delete(&model.Fingerprint{}).Error; err != nil {
+		rollback("failed to delete fingerprints")
+		return
+	}
+	if err := tx.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Delete(&model.AccountLink{}).Error; err != nil {
+		rollback("failed to delete account links")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.IPUAHistory{}).Error; err != nil {
+		rollback("failed to delete ip ua history")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.UserRiskScore{}).Error; err != nil {
+		rollback("failed to delete risk scores")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.UserDeviceProfile{}).Error; err != nil {
+		rollback("failed to delete device profiles")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.KeystrokeProfile{}).Error; err != nil {
+		rollback("failed to delete keystroke profiles")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.MouseProfile{}).Error; err != nil {
+		rollback("failed to delete mouse profiles")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.UserTemporalProfile{}).Error; err != nil {
+		rollback("failed to delete temporal profiles")
+		return
+	}
+	if err := tx.Where("user_id = ?", userID).Delete(&model.UserSession{}).Error; err != nil {
+		rollback("failed to delete user sessions")
+		return
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "failed to commit reset transaction"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "fingerprint test data reset"})
+}
+
+// FPGetUserNetworkProfile GET /api/admin/fingerprint/user/:id/network
+func FPGetUserNetworkProfile(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid user id"})
+		return
+	}
+
+	history := model.GetIPUAHistory(userID)
+	type asnStat struct {
+		ASN          int    `json:"asn"`
+		ASNOrg       string `json:"asn_org"`
+		Count        int    `json:"count"`
+		IsDatacenter bool   `json:"is_datacenter"`
+	}
+	statsMap := make(map[int]*asnStat)
+	datacenterCount := 0
+	for _, h := range history {
+		if h == nil {
+			continue
+		}
+		if h.IsDatacenter {
+			datacenterCount++
+		}
+		if h.ASN <= 0 {
+			continue
+		}
+		st, ok := statsMap[h.ASN]
+		if !ok {
+			st = &asnStat{ASN: h.ASN, ASNOrg: h.ASNOrg, IsDatacenter: h.IsDatacenter}
+			statsMap[h.ASN] = st
+		}
+		st.Count++
+	}
+	stats := make([]asnStat, 0, len(statsMap))
+	for _, st := range statsMap {
+		stats = append(stats, *st)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"user_id":          userID,
+			"asn_stats":        stats,
+			"history_count":    len(history),
+			"datacenter_count": datacenterCount,
+			"datacenter_rate": func() float64 {
+				if len(history) == 0 {
+					return 0
+				}
+				return float64(datacenterCount) / float64(len(history))
+			}(),
+		},
+	})
+}
+
+// FPGetUserTemporalProfile GET /api/admin/fingerprint/user/:id/temporal
+func FPGetUserTemporalProfile(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || userID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid user id"})
+		return
+	}
+
+	profileRaw := model.GetLatestTemporalProfile(userID)
+	if common.FingerprintEnableTemporalPrecomputeRead && profileRaw != nil && profileRaw.ActivityBins != "" {
+		bins := make([]float64, 0)
+		if err := common.UnmarshalJsonStr(profileRaw.ActivityBins, &bins); err == nil && len(bins) > 0 {
+			computedAt := profileRaw.LastActivityAt
+			if computedAt.IsZero() {
+				computedAt = profileRaw.UpdatedAt
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"data": gin.H{
+					"user_id":      userID,
+					"sample_count": profileRaw.SampleCount,
+					"profile_bins": bins,
+					"source":       "precomputed",
+					"computed_at":  computedAt,
+				},
+			})
+			return
+		}
+	}
+
+	fps := model.GetLatestFingerprints(userID, 80)
+	profileTs := make([]time.Time, 0, len(fps))
+	computedAt := time.Time{}
+	for _, fp := range fps {
+		if fp == nil || fp.CreatedAt.IsZero() {
+			continue
+		}
+		profileTs = append(profileTs, fp.CreatedAt)
+		if fp.CreatedAt.After(computedAt) {
+			computedAt = fp.CreatedAt
+		}
+	}
+	profile := service.BuildActivityProfile(profileTs)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"user_id":      userID,
+			"sample_count": len(profileTs),
+			"profile_bins": profile,
+			"source":       "realtime",
+			"computed_at":  computedAt,
+		},
+	})
 }
 
 // ─── 辅助函数 ───
@@ -372,19 +746,6 @@ func getUserBriefByID(userID int) service.UserBrief {
 		Quota:       user.Quota,
 		UsedQuota:   user.UsedQuota,
 	}
-}
-
-func banNewerAccount(userA, userB int) {
-	if userA > userB {
-		banUserByID(userA)
-	} else {
-		banUserByID(userB)
-	}
-}
-
-func banUserByID(userID int) {
-	model.DB.Model(&model.User{}).Where("id = ?", userID).
-		Update("status", common.UserStatusDisabled)
 }
 
 // FPGetUserDevices GET /api/admin/fingerprint/user/:id/devices

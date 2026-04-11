@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"time"
@@ -21,14 +20,17 @@ type AssociationResult struct {
 
 // AssociationItem 单个关联账号信息
 type AssociationItem struct {
-	User            UserBrief         `json:"user"`
-	Confidence      float64           `json:"confidence"`
-	RiskLevel       string            `json:"risk_level"`
-	MatchDimensions int               `json:"match_dimensions"`
-	TotalDimensions int               `json:"total_dimensions"`
-	Details         []DimensionMatch  `json:"details"`
-	SharedIPs       []string          `json:"shared_ips"`
-	ExistingLink    *ExistingLinkInfo `json:"existing_link,omitempty"`
+	User              UserBrief         `json:"user"`
+	Confidence        float64           `json:"confidence"`
+	Tier              string            `json:"tier"`
+	Explanation       string            `json:"explanation"`
+	MatchedDimensions []string          `json:"matched_dimensions"`
+	RiskLevel         string            `json:"risk_level"`
+	MatchDimensions   int               `json:"match_dimensions"`
+	TotalDimensions   int               `json:"total_dimensions"`
+	Details           []DimensionMatch  `json:"details"`
+	SharedIPs         []string          `json:"shared_ips"`
+	ExistingLink      *ExistingLinkInfo `json:"existing_link,omitempty"`
 }
 
 // UserBrief 用户摘要信息
@@ -88,7 +90,7 @@ func QueryUserAssociations(
 		cached, err := common.RedisGet(cacheKey)
 		if err == nil && cached != "" {
 			var result AssociationResult
-			if json.Unmarshal([]byte(cached), &result) == nil {
+			if common.Unmarshal([]byte(cached), &result) == nil {
 				filtered := make([]AssociationItem, 0)
 				for _, a := range result.Associations {
 					if a.Confidence >= minConfidence {
@@ -152,10 +154,26 @@ func QueryUserAssociations(
 		appendUnique(model.FindUsersByDeviceID(fp.LocalDeviceID))
 		appendUnique(model.FindUsersByCanvasHash(fp.CanvasHash))
 		appendUnique(model.FindUsersByWebGLHash(fp.WebGLHash))
+		appendUnique(model.FindUsersByWebGLDeepHash(fp.WebGLDeepHash))
+		appendUnique(model.FindUsersByClientRectsHash(fp.ClientRectsHash))
+		appendUnique(model.FindUsersByMediaDevicesHash(fp.MediaDevicesHash))
+		appendUnique(model.FindUsersByMediaDeviceGroupHash(fp.MediaDeviceGroupHash))
+		appendUnique(model.FindUsersBySpeechVoicesHash(fp.SpeechVoicesHash))
 		appendUnique(model.FindUsersByAudioHash(fp.AudioHash))
 		appendUnique(model.FindUsersByFontsHash(fp.FontsHash))
 		appendUnique(model.FindUsersByCompositeHash(fp.CompositeHash))
 		appendUnique(model.FindUsersByJA3(fp.TLSJA3Hash))
+		if common.FingerprintEnableJA4 {
+			appendUnique(model.FindUsersByJA4(fp.JA4))
+		}
+		if common.FingerprintEnableETag {
+			appendUnique(model.FindUsersByETagID(fp.ETagID))
+		}
+		appendUnique(model.FindUsersByHTTPHeaderHash(fp.HTTPHeaderHash))
+		if common.FingerprintEnableDNSLeak {
+			appendUnique(model.FindUsersByDNSResolverIP(fp.DNSResolverIP))
+		}
+		appendUnique(model.FindUsersByPersistentID(fp.PersistentID))
 		appendUnique(model.FindUsersByIP(fp.IPAddress))
 		subnet := GetSubnet24(fp.IPAddress)
 		appendUnique(model.FindUsersByIPSubnet(subnet))
@@ -194,18 +212,24 @@ func QueryUserAssociations(
 		}
 
 		bestConf := 0.0
+		bestTier := ""
+		bestExplanation := ""
+		var bestMatchedDimensions []string
 		var bestDetails []DimensionMatch
 		bestMatchDims := 0
 		bestTotalDims := 0
 
 		for _, tFP := range targetFPs {
 			for _, cFP := range candidateFPs {
-				conf, details, matchDims, totalDims := CompareFingerprints(tFP, cFP, targetUserID, candidateUID)
-				if conf > bestConf {
-					bestConf = conf
-					bestDetails = details
-					bestMatchDims = matchDims
-					bestTotalDims = totalDims
+				similarity := CalculateSimilarity(tFP, cFP, targetUserID, candidateUID)
+				if similarity.Score > bestConf {
+					bestConf = similarity.Score
+					bestTier = similarity.Tier
+					bestExplanation = similarity.Explanation
+					bestMatchedDimensions = similarity.MatchedDimensions
+					bestDetails = similarity.Details
+					bestMatchDims = similarity.MatchDimensions
+					bestTotalDims = similarity.TotalDimensions
 				}
 			}
 		}
@@ -217,13 +241,16 @@ func QueryUserAssociations(
 		sharedIPs := GetSharedIPs(targetUserID, candidateUID)
 
 		item := AssociationItem{
-			User:            getUserBrief(candidateUID),
-			Confidence:      bestConf,
-			RiskLevel:       confidenceToRiskLevel(bestConf),
-			MatchDimensions: bestMatchDims,
-			TotalDimensions: bestTotalDims,
-			Details:         bestDetails,
-			SharedIPs:       sharedIPs,
+			User:              getUserBrief(candidateUID),
+			Confidence:        bestConf,
+			Tier:              bestTier,
+			Explanation:       bestExplanation,
+			MatchedDimensions: bestMatchedDimensions,
+			RiskLevel:         confidenceToRiskLevel(bestConf),
+			MatchDimensions:   bestMatchDims,
+			TotalDimensions:   bestTotalDims,
+			Details:           bestDetails,
+			SharedIPs:         sharedIPs,
 		}
 
 		// 检查是否已有 Link 记录
@@ -256,7 +283,7 @@ func QueryUserAssociations(
 
 	// ★ 改动: 仅在未指定特定设备档案时缓存（全局结果）
 	if common.RedisEnabled && baseFingerprint == nil {
-		if data, err := json.Marshal(fullResult); err == nil {
+		if data, err := common.Marshal(fullResult); err == nil {
 			cacheKey := fmt.Sprintf("fp:assoc:%d", targetUserID)
 			common.RedisSet(cacheKey, string(data), 30*time.Minute)
 		}
@@ -279,8 +306,7 @@ func QueryUserAssociations(
 
 func getUserBrief(userID int) UserBrief {
 	var user model.User
-	if err := model.DB.Select("id, username, email, display_name, role, status, quota, used_quota").
-		First(&user, userID).Error; err != nil {
+	if err := model.DB.First(&user, userID).Error; err != nil {
 		return UserBrief{ID: userID}
 	}
 	return UserBrief{

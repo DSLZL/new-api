@@ -369,7 +369,24 @@ const EditUserModal = (props) => {
 
                 {/* ★ 指纹关联查询 */}
                 {userId && hasFPAccess && (
-                  <UserAssociations userId={userId} />
+                  <Card className='!rounded-2xl shadow-sm border-0'>
+                    <div className='mb-2'>
+                      <div className='flex items-center gap-2'>
+                        <Tag color='cyan' size='small'>
+                          {t('指纹关联复核')}
+                        </Tag>
+                        <Text strong>
+                          {t('用户')} #{userId} {t('的关联账号分析')}
+                        </Text>
+                      </div>
+                      <Text size='small' type='tertiary'>
+                        {t(
+                          '以下分析面板用于复核该用户的潜在关联账号，包含 Tier 分层、命中维度摘要、时序对比和 VPN/代理风险提示。',
+                        )}
+                      </Text>
+                    </div>
+                    <UserAssociations userId={userId} />
+                  </Card>
                 )}
               </div>
             )}

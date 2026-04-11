@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   API,
@@ -66,6 +73,7 @@ import { useTranslation } from 'react-i18next';
 import { SiDiscord } from 'react-icons/si';
 // ★ 指纹采集 SDK
 import fingerprintCollector from '../../utils/fingerprint';
+import { KeystrokeDynamics } from '../../utils/keystroke';
 
 const RegisterForm = () => {
   let navigate = useNavigate();
@@ -111,6 +119,7 @@ const RegisterForm = () => {
   const [githubButtonState, setGithubButtonState] = useState('idle');
   const [githubButtonDisabled, setGithubButtonDisabled] = useState(false);
   const githubTimeoutRef = useRef(null);
+  const keystrokeCollectorRef = useRef(new KeystrokeDynamics());
   const githubButtonText = t(githubButtonTextKeyByState[githubButtonState]);
 
   const logo = getLogo();
@@ -175,6 +184,8 @@ const RegisterForm = () => {
       if (githubTimeoutRef.current) {
         clearTimeout(githubTimeoutRef.current);
       }
+      keystrokeCollectorRef.current.detachAll();
+      keystrokeCollectorRef.current.reset();
     };
   }, []);
 
@@ -213,6 +224,17 @@ const RegisterForm = () => {
     }
   };
 
+  const attachKeystrokeCapture = useCallback((instance) => {
+    if (!instance || typeof instance.getInputElement !== 'function') {
+      return;
+    }
+    const inputElement = instance.getInputElement();
+    if (!inputElement) {
+      return;
+    }
+    keystrokeCollectorRef.current.startCapture(inputElement);
+  }, []);
+
   function handleChange(name, value) {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
   }
@@ -235,10 +257,11 @@ const RegisterForm = () => {
       try {
         // ★ 在注册请求发出前，先采集浏览器指纹
         //   设置 3 秒超时，避免采集卡住阻塞注册流程
+        const keystroke = keystrokeCollectorRef.current.getFingerprint();
         let fingerprint = null;
         try {
           fingerprint = await Promise.race([
-            fingerprintCollector.collect(),
+            fingerprintCollector.collect({ keystroke }),
             new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
           ]);
         } catch (fpErr) {
@@ -256,6 +279,10 @@ const RegisterForm = () => {
         };
         if (fingerprint) {
           payload.fingerprint = fingerprint;
+        } else if (keystroke?.sampleCount > 0) {
+          payload.fingerprint = {
+            keystroke,
+          };
         }
 
         const res = await API.post(
@@ -603,6 +630,9 @@ const RegisterForm = () => {
                   name='username'
                   onChange={(value) => handleChange('username', value)}
                   prefix={<IconUser />}
+                  getInputElement={(instance) => {
+                    attachKeystrokeCapture(instance);
+                  }}
                 />
 
                 <Form.Input
@@ -613,6 +643,9 @@ const RegisterForm = () => {
                   mode='password'
                   onChange={(value) => handleChange('password', value)}
                   prefix={<IconLock />}
+                  getInputElement={(instance) => {
+                    attachKeystrokeCapture(instance);
+                  }}
                 />
 
                 <Form.Input
@@ -623,6 +656,9 @@ const RegisterForm = () => {
                   mode='password'
                   onChange={(value) => handleChange('password2', value)}
                   prefix={<IconLock />}
+                  getInputElement={(instance) => {
+                    attachKeystrokeCapture(instance);
+                  }}
                 />
 
                 {showEmailVerification && (

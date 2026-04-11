@@ -386,11 +386,16 @@ func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
 		return
 	}
 
+	// ETag 追踪脚本路由（未登录可访问；登录态可关联用户）
+	apiRouter.GET("/static/fp.js", middleware.FingerprintStaticRateLimit(), middleware.TryUserAuth(), controller.ETagTracker)
+
 	// 指纹上报 — 已登录用户
 	fpAPI := apiRouter.Group("/fingerprint")
 	fpAPI.Use(middleware.UserAuth())
+	fpAPI.Use(middleware.FingerprintReportRateLimit())
 	{
 		fpAPI.POST("/report", controller.ReportFingerprint)
+		fpAPI.POST("/behavior", controller.ReportBehaviorFingerprint)
 	}
 
 	// 权限查询 — 已登录用户
@@ -405,6 +410,8 @@ func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
 		fpAdmin.GET("/links", controller.FPGetLinks)
 		fpAdmin.GET("/links/:id", controller.FPGetLinkDetail)
 		fpAdmin.POST("/links/:id/review", controller.FPReviewLink)
+		fpAdmin.GET("/weights", controller.FPGetWeights)
+		fpAdmin.PUT("/weights", controller.FPUpdateWeights)
 
 		// ★ 关联度查询
 		fpAdmin.GET("/user/:id/associations", controller.FPGetUserAssociations)
@@ -413,10 +420,14 @@ func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
 		fpAdmin.GET("/user/:id/devices", controller.FPGetUserDevices)
 		fpAdmin.GET("/user/:id/risk", controller.FPGetUserRisk)
 		fpAdmin.GET("/user/:id/ip-history", controller.FPGetUserIPHistory)
+		fpAdmin.GET("/user/:id/network", controller.FPGetUserNetworkProfile)
+		fpAdmin.GET("/user/:id/temporal", controller.FPGetUserTemporalProfile)
 
 		fpAdmin.POST("/compare", controller.FPCompareUsers)
 
 		// 仅超级管理员
 		fpAdmin.POST("/scan", middleware.SuperAdminOnly(), controller.FPTriggerFullScan)
+
+		fpAdmin.POST("/user/:id/reset-test-data", middleware.SuperAdminOnly(), controller.FPResetUserFingerprintTestData)
 	}
 }

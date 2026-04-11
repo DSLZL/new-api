@@ -2,8 +2,12 @@ package model
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Fingerprint 用户指纹记录
@@ -13,12 +17,16 @@ type Fingerprint struct {
 	UserID int `json:"user_id" gorm:"index;not null"`
 
 	// ─── 网络层指纹 ───
-	IPAddress string `json:"ip_address" gorm:"type:varchar(45);index;not null;default:''"`
-	IPCountry string `json:"ip_country" gorm:"type:varchar(10);default:''"`
-	IPRegion  string `json:"ip_region" gorm:"type:varchar(50);default:''"`
-	IPCity    string `json:"ip_city" gorm:"type:varchar(50);default:''"`
-	IPISP     string `json:"ip_isp" gorm:"type:varchar(100);default:''"`
-	IPType    string `json:"ip_type" gorm:"type:varchar(20);default:''"` // residential/datacenter/vpn/proxy/tor
+	IPAddress    string `json:"ip_address" gorm:"type:varchar(45);index;not null;default:''"`
+	IPCountry    string `json:"ip_country" gorm:"type:varchar(10);default:''"`
+	IPRegion     string `json:"ip_region" gorm:"type:varchar(50);default:''"`
+	IPCity       string `json:"ip_city" gorm:"type:varchar(50);default:''"`
+	IPISP        string `json:"ip_isp" gorm:"type:varchar(100);default:''"`
+	IPType       string `json:"ip_type" gorm:"type:varchar(20);default:''"` // residential/datacenter/vpn/proxy/tor
+	DNSResolverIP string `json:"dns_resolver_ip" gorm:"type:varchar(45);index;default:''"`
+	ASN          int    `json:"asn" gorm:"default:0"`
+	ASNOrg       string `json:"asn_org" gorm:"type:varchar(160);default:''"`
+	IsDatacenter bool   `json:"is_datacenter" gorm:"default:false"`
 
 	UserAgent    string `json:"user_agent" gorm:"type:text;default:''"`
 	UABrowser    string `json:"ua_browser" gorm:"type:varchar(50);default:''"`
@@ -28,18 +36,29 @@ type Fingerprint struct {
 	UADeviceType string `json:"ua_device_type" gorm:"type:varchar(20);default:''"`
 
 	// ─── 协议层指纹 ───
-	TLSJA3Hash string `json:"tls_ja3_hash" gorm:"type:varchar(32);default:''"`
-	HTTP2FP    string `json:"http2_fp" gorm:"type:varchar(64);default:''"`
-	TCPOSGuess string `json:"tcp_os_guess" gorm:"type:varchar(50);default:''"`
+	TLSJA3Hash     string `json:"tls_ja3_hash" gorm:"type:varchar(32);default:''"`
+	JA4            string `json:"ja4" gorm:"type:varchar(128);index;default:''"`
+	HTTPHeaderHash string `json:"http_header_hash" gorm:"type:varchar(32);index;default:''"`
+	HTTP2FP        string `json:"http2_fp" gorm:"type:varchar(64);default:''"`
+	TCPOSGuess     string `json:"tcp_os_guess" gorm:"type:varchar(50);default:''"`
 
 	// ─── 浏览器指纹 ───
-	CanvasHash    string `json:"canvas_hash" gorm:"type:varchar(64);index;default:''"`
-	WebGLHash     string `json:"webgl_hash" gorm:"column:webgl_hash;type:varchar(64);index;default:''"`
-	WebGLVendor   string `json:"webgl_vendor" gorm:"type:varchar(100);default:''"`
-	WebGLRenderer string `json:"webgl_renderer" gorm:"type:varchar(200);default:''"`
-	AudioHash     string `json:"audio_hash" gorm:"type:varchar(64);index;default:''"`
-	FontsHash     string `json:"fonts_hash" gorm:"type:varchar(64);index;default:''"`
-	FontsList     string `json:"fonts_list" gorm:"type:text;default:''"`
+	CanvasHash            string `json:"canvas_hash" gorm:"type:varchar(64);index;default:''"`
+	WebGLHash             string `json:"webgl_hash" gorm:"column:webgl_hash;type:varchar(64);index;default:''"`
+	WebGLDeepHash         string `json:"webgl_deep_hash" gorm:"type:varchar(64);index;default:''"`
+	ClientRectsHash       string `json:"client_rects_hash" gorm:"type:varchar(64);index;default:''"`
+	WebGLVendor           string `json:"webgl_vendor" gorm:"type:varchar(100);default:''"`
+	WebGLRenderer         string `json:"webgl_renderer" gorm:"type:varchar(200);default:''"`
+	MediaDevicesHash      string `json:"media_devices_hash" gorm:"type:varchar(64);index;default:''"`
+	MediaDeviceCount      string `json:"media_device_count" gorm:"type:varchar(32);default:''"`
+	MediaDeviceGroupHash  string `json:"media_device_group_hash" gorm:"type:varchar(64);index;default:''"`
+	MediaDeviceTotal      int    `json:"media_device_total" gorm:"default:0"`
+	SpeechVoicesHash      string `json:"speech_voices_hash" gorm:"type:varchar(64);index;default:''"`
+	SpeechVoiceCount      int    `json:"speech_voice_count" gorm:"default:0"`
+	SpeechLocalVoiceCount int    `json:"speech_local_voice_count" gorm:"default:0"`
+	AudioHash             string `json:"audio_hash" gorm:"type:varchar(64);index;default:''"`
+	FontsHash             string `json:"fonts_hash" gorm:"type:varchar(64);index;default:''"`
+	FontsList             string `json:"fonts_list" gorm:"type:text;default:''"`
 
 	// ─── 硬件特征 ───
 	ScreenWidth  int     `json:"screen_width" gorm:"default:0"`
@@ -59,7 +78,14 @@ type Fingerprint struct {
 	CookieEnabled bool   `json:"cookie_enabled" gorm:"default:true"`
 
 	// ─── 持久化追踪 ───
-	LocalDeviceID string `json:"local_device_id" gorm:"type:varchar(64);index;default:''"`
+	LocalDeviceID      string `json:"local_device_id" gorm:"type:varchar(64);index;default:''"`
+	ETagID             string `json:"etag_id" gorm:"column:etag_id;type:varchar(64);index;default:''"`
+	PersistentID       string `json:"persistent_id" gorm:"type:varchar(64);index;default:''"`
+	PersistentIDSource string `json:"persistent_id_source" gorm:"type:varchar(32);default:''"`
+
+	// ─── WebRTC IP 指纹 ───
+	WebRTCLocalIPs  string `json:"webrtc_local_ips" gorm:"type:text;default:''"`
+	WebRTCPublicIPs string `json:"webrtc_public_ips" gorm:"type:text;default:''"`
 
 	// ─── 综合指纹 ───
 	CompositeHash string `json:"composite_hash" gorm:"type:varchar(64);index;not null;default:''"`
@@ -78,6 +104,35 @@ func (Fingerprint) TableName() string {
 
 func (fp *Fingerprint) Insert() error {
 	return DB.Create(fp).Error
+}
+
+func insertFingerprintWithDB(db *gorm.DB, fp *Fingerprint) error {
+	return db.Create(fp).Error
+}
+
+var (
+	ErrFingerprintPersistInsert   = errors.New("fingerprint persist insert")
+	ErrFingerprintPersistDevice   = errors.New("fingerprint persist device")
+	ErrFingerprintPersistSession  = errors.New("fingerprint persist session")
+	ErrFingerprintPersistBehavior = errors.New("fingerprint persist behavior")
+)
+
+func PersistFingerprintReportAtomic(fp *Fingerprint, profile *UserDeviceProfile, session *UserSession, keystroke *KeystrokeProfile, mouse *MouseProfile) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := insertFingerprintWithDB(tx, fp); err != nil {
+			return fmt.Errorf("%w: %w", ErrFingerprintPersistInsert, err)
+		}
+		if err := upsertDeviceProfileWithDB(tx, profile); err != nil {
+			return fmt.Errorf("%w: %w", ErrFingerprintPersistDevice, err)
+		}
+		if err := upsertUserSessionWithDB(tx, session); err != nil {
+			return fmt.Errorf("%w: %w", ErrFingerprintPersistSession, err)
+		}
+		if err := upsertBehaviorProfilesAtomicWithDB(tx, keystroke, mouse); err != nil {
+			return fmt.Errorf("%w: %w", ErrFingerprintPersistBehavior, err)
+		}
+		return nil
+	})
 }
 
 // ─── 查询方法 ───
@@ -120,6 +175,66 @@ func FindUsersByWebGLHash(hash string) []int {
 	var userIDs []int
 	DB.Model(&Fingerprint{}).
 		Where("webgl_hash = ? AND webgl_hash != ''", hash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByWebGLDeepHash(hash string) []int {
+	if hash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("webgl_deep_hash = ? AND webgl_deep_hash != ''", hash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByClientRectsHash(hash string) []int {
+	if hash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("client_rects_hash = ? AND client_rects_hash != ''", hash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByMediaDevicesHash(hash string) []int {
+	if hash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("media_devices_hash = ? AND media_devices_hash != ''", hash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByMediaDeviceGroupHash(hash string) []int {
+	if hash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("media_device_group_hash = ? AND media_device_group_hash != ''", hash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersBySpeechVoicesHash(hash string) []int {
+	if hash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("speech_voices_hash = ? AND speech_voices_hash != ''", hash).
 		Distinct("user_id").
 		Pluck("user_id", &userIDs)
 	return userIDs
@@ -185,6 +300,66 @@ func FindUsersByJA3(ja3 string) []int {
 	return userIDs
 }
 
+func FindUsersByJA4(ja4 string) []int {
+	if ja4 == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("ja4 = ? AND ja4 != ''", ja4).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByHTTPHeaderHash(httpHeaderHash string) []int {
+	if httpHeaderHash == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("http_header_hash = ? AND http_header_hash != ''", httpHeaderHash).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByETagID(etagID string) []int {
+	if etagID == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("etag_id = ? AND etag_id != ''", etagID).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByPersistentID(persistentID string) []int {
+	if persistentID == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("persistent_id = ? AND persistent_id != ''", persistentID).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func FindUsersByDNSResolverIP(resolverIP string) []int {
+	if resolverIP == "" {
+		return nil
+	}
+	var userIDs []int
+	DB.Model(&Fingerprint{}).
+		Where("dns_resolver_ip = ? AND dns_resolver_ip != ''", resolverIP).
+		Distinct("user_id").
+		Pluck("user_id", &userIDs)
+	return userIDs
+}
+
 // ─── 统计与维护 ───
 
 func CountFingerprints() int64 {
@@ -222,26 +397,91 @@ func DeleteOldFingerprints(before time.Time) int64 {
 // ═══════════════════════════════════════════════════════════════
 
 type UserDeviceProfile struct {
-	ID            int64     `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserID        int       `json:"user_id" gorm:"index;not null"`
-	DeviceKey     string    `json:"device_key" gorm:"type:varchar(64);not null"` // 稳定设备标识
-	CanvasHash    string    `json:"canvas_hash" gorm:"type:varchar(64)"`
-	WebGLHash     string    `json:"webgl_hash" gorm:"type:varchar(64)"`
-	AudioHash     string    `json:"audio_hash" gorm:"type:varchar(64)"`
-	FontsHash     string    `json:"fonts_hash" gorm:"type:varchar(64)"`
-	LocalDeviceID string    `json:"local_device_id" gorm:"type:varchar(64)"`
-	CompositeHash string    `json:"composite_hash" gorm:"type:varchar(64)"`
-	UABrowser     string    `json:"ua_browser" gorm:"type:varchar(50)"`
-	UAOS          string    `json:"ua_os" gorm:"type:varchar(50)"`
-	UADeviceType  string    `json:"ua_device_type" gorm:"type:varchar(20)"`
-	LastSeenIP    string    `json:"last_seen_ip" gorm:"type:varchar(45)"`
-	FirstSeenAt   time.Time `json:"first_seen_at" gorm:"autoCreateTime"`
-	LastSeenAt    time.Time `json:"last_seen_at" gorm:"autoUpdateTime"`
-	SeenCount     int       `json:"seen_count" gorm:"default:1"`
+	ID                    int64     `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserID                int       `json:"user_id" gorm:"not null;index;uniqueIndex:uk_udp_user_device_key,priority:1"`
+	DeviceKey             string    `json:"device_key" gorm:"type:varchar(64);not null;index:idx_udp_device_key;uniqueIndex:uk_udp_user_device_key,priority:2"` // 稳定设备标识
+	CanvasHash            string    `json:"canvas_hash" gorm:"type:varchar(64)"`
+	WebGLHash             string    `json:"webgl_hash" gorm:"type:varchar(64)"`
+	WebGLDeepHash         string    `json:"webgl_deep_hash" gorm:"type:varchar(64);index"`
+	ClientRectsHash       string    `json:"client_rects_hash" gorm:"type:varchar(64);index"`
+	MediaDevicesHash      string    `json:"media_devices_hash" gorm:"type:varchar(64);index"`
+	MediaDeviceCount      string    `json:"media_device_count" gorm:"type:varchar(32)"`
+	MediaDeviceGroupHash  string    `json:"media_device_group_hash" gorm:"type:varchar(64);index"`
+	MediaDeviceTotal      int       `json:"media_device_total" gorm:"default:0"`
+	SpeechVoicesHash      string    `json:"speech_voices_hash" gorm:"type:varchar(64);index"`
+	SpeechVoiceCount      int       `json:"speech_voice_count" gorm:"default:0"`
+	SpeechLocalVoiceCount int       `json:"speech_local_voice_count" gorm:"default:0"`
+	AudioHash             string    `json:"audio_hash" gorm:"type:varchar(64)"`
+	FontsHash             string    `json:"fonts_hash" gorm:"type:varchar(64)"`
+	LocalDeviceID         string    `json:"local_device_id" gorm:"type:varchar(64)"`
+	CompositeHash         string    `json:"composite_hash" gorm:"type:varchar(64)"`
+	HTTPHeaderHash        string    `json:"http_header_hash" gorm:"type:varchar(32);index"`
+	UABrowser             string    `json:"ua_browser" gorm:"type:varchar(50)"`
+	UAOS                  string    `json:"ua_os" gorm:"type:varchar(50)"`
+	UADeviceType          string    `json:"ua_device_type" gorm:"type:varchar(20)"`
+	LastSeenIP            string    `json:"last_seen_ip" gorm:"type:varchar(45)"`
+	FirstSeenAt           time.Time `json:"first_seen_at" gorm:"autoCreateTime"`
+	LastSeenAt            time.Time `json:"last_seen_at" gorm:"autoUpdateTime"`
+	SeenCount             int       `json:"seen_count" gorm:"default:1"`
 }
 
 func (UserDeviceProfile) TableName() string {
 	return "user_device_profiles"
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UserTemporalProfile — 用户时序画像（日聚合）
+// ═══════════════════════════════════════════════════════════════
+
+type UserTemporalProfile struct {
+	ID int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+
+	UserID int `json:"user_id" gorm:"index;not null"`
+
+	// ProfileDate: YYYY-MM-DD（UTC 日期）
+	ProfileDate string `json:"profile_date" gorm:"type:varchar(10);not null"`
+	Timezone    string `json:"timezone" gorm:"type:varchar(50);default:''"`
+
+	// 48-bin（30分钟）分布，JSON 字符串存储，兼容三库
+	ActivityBins string `json:"activity_bins" gorm:"type:text;not null;default:''"`
+	PeakBin      int    `json:"peak_bin" gorm:"default:0"`
+
+	SampleCount    int       `json:"sample_count" gorm:"default:0"`
+	LastActivityAt time.Time `json:"last_activity_at" gorm:"index"`
+	CreatedAt      time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt      time.Time `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (UserTemporalProfile) TableName() string {
+	return "user_temporal_profiles"
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UserSession — 用户会话窗口（用于互斥/切换分析）
+// ═══════════════════════════════════════════════════════════════
+
+type UserSession struct {
+	ID int64 `json:"id" gorm:"primaryKey;autoIncrement"`
+
+	UserID int `json:"user_id" gorm:"index;not null"`
+
+	SessionID string `json:"session_id" gorm:"type:varchar(64);index;default:''"`
+	DeviceKey string `json:"device_key" gorm:"type:varchar(64);index;default:''"`
+	IPAddress string `json:"ip_address" gorm:"type:varchar(45);index;default:''"`
+
+	StartedAt       time.Time `json:"started_at" gorm:"index;not null"`
+	EndedAt         time.Time `json:"ended_at" gorm:"index"`
+	DurationSeconds int       `json:"duration_seconds" gorm:"default:0"`
+	EventCount      int       `json:"event_count" gorm:"default:1"`
+	IsBurst         bool      `json:"is_burst" gorm:"default:false"`
+	Source          string    `json:"source" gorm:"type:varchar(20);default:fingerprint"`
+
+	CreatedAt time.Time `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt time.Time `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (UserSession) TableName() string {
+	return "user_sessions"
 }
 
 // BuildDeviceKey 生成稳定的设备标识：local_device_id 优先，否则取三个硬件 hash 组合
@@ -260,26 +500,86 @@ func BuildDeviceKey(localDeviceID, canvasHash, webGLHash, audioHash string) stri
 // UpsertDeviceProfile 写入或更新设备档案（幂等）
 // unique index: (user_id, device_key)
 func UpsertDeviceProfile(profile *UserDeviceProfile) error {
-	if profile.DeviceKey == "" {
+	return upsertDeviceProfileWithDB(DB, profile)
+}
+
+func upsertDeviceProfileWithDB(db *gorm.DB, profile *UserDeviceProfile) error {
+	if profile == nil || profile.DeviceKey == "" {
 		return nil
 	}
 
-	// 先尝试查找已有档案
-	var existing UserDeviceProfile
-	err := DB.Where("user_id = ? AND device_key = ?", profile.UserID, profile.DeviceKey).
-		First(&existing).Error
-
-	if err != nil {
-		// 不存在 → 新建
-		return DB.Create(profile).Error
+	now := time.Now()
+	insertProfile := *profile
+	insertProfile.LastSeenAt = now
+	if insertProfile.SeenCount <= 0 {
+		insertProfile.SeenCount = 1
 	}
 
-	// 存在 → 更新 last_seen_ip 和 seen_count
-	return DB.Model(&existing).Updates(map[string]interface{}{
-		"last_seen_ip": profile.LastSeenIP,
-		"last_seen_at": time.Now(),
-		"seen_count":   existing.SeenCount + 1,
-	}).Error
+	createResult := db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "device_key"}},
+		DoNothing: true,
+	}).Create(&insertProfile)
+	if createResult.Error != nil {
+		return createResult.Error
+	}
+	if createResult.RowsAffected > 0 {
+		return nil
+	}
+
+	updates := UserDeviceProfile{
+		CanvasHash:            profile.CanvasHash,
+		WebGLHash:             profile.WebGLHash,
+		WebGLDeepHash:         profile.WebGLDeepHash,
+		ClientRectsHash:       profile.ClientRectsHash,
+		MediaDevicesHash:      profile.MediaDevicesHash,
+		MediaDeviceCount:      profile.MediaDeviceCount,
+		MediaDeviceGroupHash:  profile.MediaDeviceGroupHash,
+		MediaDeviceTotal:      profile.MediaDeviceTotal,
+		SpeechVoicesHash:      profile.SpeechVoicesHash,
+		SpeechVoiceCount:      profile.SpeechVoiceCount,
+		SpeechLocalVoiceCount: profile.SpeechLocalVoiceCount,
+		AudioHash:             profile.AudioHash,
+		FontsHash:             profile.FontsHash,
+		LocalDeviceID:         profile.LocalDeviceID,
+		CompositeHash:         profile.CompositeHash,
+		HTTPHeaderHash:        profile.HTTPHeaderHash,
+		UABrowser:             profile.UABrowser,
+		UAOS:                  profile.UAOS,
+		UADeviceType:          profile.UADeviceType,
+		LastSeenIP:            profile.LastSeenIP,
+		LastSeenAt:            now,
+	}
+	if err := db.Model(&UserDeviceProfile{}).
+		Where("user_id = ? AND device_key = ?", profile.UserID, profile.DeviceKey).
+		Select(
+			"CanvasHash",
+			"WebGLHash",
+			"WebGLDeepHash",
+			"ClientRectsHash",
+			"MediaDevicesHash",
+			"MediaDeviceCount",
+			"MediaDeviceGroupHash",
+			"MediaDeviceTotal",
+			"SpeechVoicesHash",
+			"SpeechVoiceCount",
+			"SpeechLocalVoiceCount",
+			"AudioHash",
+			"FontsHash",
+			"LocalDeviceID",
+			"CompositeHash",
+			"HTTPHeaderHash",
+			"UABrowser",
+			"UAOS",
+			"UADeviceType",
+			"LastSeenIP",
+			"LastSeenAt",
+		).
+		Updates(&updates).Error; err != nil {
+		return err
+	}
+	return db.Model(&UserDeviceProfile{}).
+		Where("user_id = ? AND device_key = ?", profile.UserID, profile.DeviceKey).
+		UpdateColumn("SeenCount", gorm.Expr("seen_count + ?", 1)).Error
 }
 
 // GetDeviceProfiles 获取指定用户的所有设备档案
@@ -328,18 +628,28 @@ func GetDeviceProfilesAsFingerprints(userID int) []*Fingerprint {
 	result := make([]*Fingerprint, 0, len(profiles))
 	for _, p := range profiles {
 		result = append(result, &Fingerprint{
-			UserID:        p.UserID,
-			CanvasHash:    p.CanvasHash,
-			WebGLHash:     p.WebGLHash,
-			AudioHash:     p.AudioHash,
-			FontsHash:     p.FontsHash,
-			LocalDeviceID: p.LocalDeviceID,
-			CompositeHash: p.CompositeHash,
-			UABrowser:     p.UABrowser,
-			UAOS:          p.UAOS,
-			UADeviceType:  p.UADeviceType,
-			IPAddress:     p.LastSeenIP,
-			CreatedAt:     p.LastSeenAt,
+			UserID:                p.UserID,
+			CanvasHash:            p.CanvasHash,
+			WebGLHash:             p.WebGLHash,
+			WebGLDeepHash:         p.WebGLDeepHash,
+			ClientRectsHash:       p.ClientRectsHash,
+			MediaDevicesHash:      p.MediaDevicesHash,
+			MediaDeviceCount:      p.MediaDeviceCount,
+			MediaDeviceGroupHash:  p.MediaDeviceGroupHash,
+			MediaDeviceTotal:      p.MediaDeviceTotal,
+			SpeechVoicesHash:      p.SpeechVoicesHash,
+			SpeechVoiceCount:      p.SpeechVoiceCount,
+			SpeechLocalVoiceCount: p.SpeechLocalVoiceCount,
+			AudioHash:             p.AudioHash,
+			FontsHash:             p.FontsHash,
+			LocalDeviceID:         p.LocalDeviceID,
+			CompositeHash:         p.CompositeHash,
+			HTTPHeaderHash:        p.HTTPHeaderHash,
+			UABrowser:             p.UABrowser,
+			UAOS:                  p.UAOS,
+			UADeviceType:          p.UADeviceType,
+			IPAddress:             p.LastSeenIP,
+			CreatedAt:             p.LastSeenAt,
 		})
 	}
 	return result
@@ -358,17 +668,27 @@ func GetDeviceProfileByID(id int64) *UserDeviceProfile {
 // 供关联分析时作为比对基准使用
 func DeviceProfileToFingerprint(p *UserDeviceProfile) *Fingerprint {
 	return &Fingerprint{
-		UserID:        p.UserID,
-		CanvasHash:    p.CanvasHash,
-		WebGLHash:     p.WebGLHash,
-		AudioHash:     p.AudioHash,
-		FontsHash:     p.FontsHash,
-		LocalDeviceID: p.LocalDeviceID,
-		CompositeHash: p.CompositeHash,
-		UABrowser:     p.UABrowser,
-		UAOS:          p.UAOS,
-		UADeviceType:  p.UADeviceType,
-		IPAddress:     p.LastSeenIP,
-		CreatedAt:     p.LastSeenAt,
+		UserID:                p.UserID,
+		CanvasHash:            p.CanvasHash,
+		WebGLHash:             p.WebGLHash,
+		WebGLDeepHash:         p.WebGLDeepHash,
+		ClientRectsHash:       p.ClientRectsHash,
+		MediaDevicesHash:      p.MediaDevicesHash,
+		MediaDeviceCount:      p.MediaDeviceCount,
+		MediaDeviceGroupHash:  p.MediaDeviceGroupHash,
+		MediaDeviceTotal:      p.MediaDeviceTotal,
+		SpeechVoicesHash:      p.SpeechVoicesHash,
+		SpeechVoiceCount:      p.SpeechVoiceCount,
+		SpeechLocalVoiceCount: p.SpeechLocalVoiceCount,
+		AudioHash:             p.AudioHash,
+		FontsHash:             p.FontsHash,
+		LocalDeviceID:         p.LocalDeviceID,
+		CompositeHash:         p.CompositeHash,
+		HTTPHeaderHash:        p.HTTPHeaderHash,
+		UABrowser:             p.UABrowser,
+		UAOS:                  p.UAOS,
+		UADeviceType:          p.UADeviceType,
+		IPAddress:             p.LastSeenIP,
+		CreatedAt:             p.LastSeenAt,
 	}
 }

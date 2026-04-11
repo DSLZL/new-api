@@ -59,6 +59,7 @@ import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
 import { useFingerprint } from './hooks/useFingerprint';
+import fingerprintCollector from './utils/fingerprint';
 const FingerprintPage = lazy(() => import('./pages/Admin/Fingerprint'));
 
 const Home = lazy(() => import('./pages/Home'));
@@ -99,10 +100,10 @@ function App() {
     }
   }, []);
 
-  // ── 检测 userId 从 0 → 有效值的转变，派发事件通知 hook ──
+  // ── 检测 userId 变为新的有效用户，派发事件通知 hook ──
   const prevUserIdRef = useRef(userId);
   useEffect(() => {
-    if (userId > 0 && prevUserIdRef.current === 0) {
+    if (userId > 0 && prevUserIdRef.current !== userId) {
       window.dispatchEvent(new Event('napi:user-login'));
     }
     prevUserIdRef.current = userId;
@@ -133,6 +134,13 @@ function App() {
   }, [userId, syncUserId]);
 
   useFingerprint(userId);
+
+  useEffect(() => {
+    if (userId <= 0) {
+      return;
+    }
+    void fingerprintCollector.primePersistenceAfterLogin();
+  }, [userId]);
   // ════════════════════════════════════════════════════════════
   // ★ 指纹采集
 

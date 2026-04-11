@@ -125,8 +125,7 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 	defer response.Body.Close()
 
 	if response.StatusCode != 200 {
-		err = errors.New(fmt.Sprintf("fail to get image from url: %s", response.Status))
-		return image.Config{}, "", err
+		return image.Config{}, "", fmt.Errorf("fail to get image from url: %s", response.Status)
 	}
 
 	mimeType := response.Header.Get("Content-Type")
@@ -162,11 +161,11 @@ func getImageConfig(reader io.Reader) (image.Config, string, error) {
 	// 读取图片的头部信息来获取图片尺寸
 	config, format, err := image.DecodeConfig(reader)
 	if err != nil {
-		err = errors.New(fmt.Sprintf("fail to decode image config(gif, jpg, png): %s", err.Error()))
+		err = fmt.Errorf("fail to decode image config(gif, jpg, png): %w", err)
 		common.SysLog(err.Error())
 		config, err = webp.DecodeConfig(reader)
 		if err != nil {
-			err = errors.New(fmt.Sprintf("fail to decode image config(webp): %s", err.Error()))
+			err = fmt.Errorf("fail to decode image config(webp): %w", err)
 			common.SysLog(err.Error())
 		}
 		format = "webp"

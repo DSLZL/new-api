@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { UserContext } from '../../context/User';
 import { StatusContext } from '../../context/Status';
@@ -66,6 +73,10 @@ import LinuxDoIcon from '../common/logo/LinuxDoIcon';
 import TwoFAVerification from './TwoFAVerification';
 import { useTranslation } from 'react-i18next';
 import { SiDiscord } from 'react-icons/si';
+import { KeystrokeDynamics } from '../../utils/keystroke';
+import { markFreshLoginKeystrokeSeed } from '../../hooks/useFingerprint.helpers';
+
+const KEYSTROKE_SEED_STORAGE_KEY = '_napi_fp_keystroke_seed';
 
 const LoginForm = () => {
   let navigate = useNavigate();
@@ -81,7 +92,7 @@ const LoginForm = () => {
     wechat_verification_code: '',
   });
   const { username, password } = inputs;
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [submitted, setSubmitted] = useState(false);
   const [userState, userDispatch] = useContext(UserContext);
   const [statusState] = useContext(StatusContext);
@@ -110,6 +121,7 @@ const LoginForm = () => {
   const [githubButtonState, setGithubButtonState] = useState('idle');
   const [githubButtonDisabled, setGithubButtonDisabled] = useState(false);
   const githubTimeoutRef = useRef(null);
+  const keystrokeCollectorRef = useRef(new KeystrokeDynamics());
   const githubButtonText = t(githubButtonTextKeyByState[githubButtonState]);
   const [customOAuthLoading, setCustomOAuthLoading] = useState({});
 
@@ -135,12 +147,12 @@ const LoginForm = () => {
     (status.custom_oauth_providers || []).length > 0;
   const hasOAuthLoginOptions = Boolean(
     status.github_oauth ||
-      status.discord_oauth ||
-      status.oidc_enabled ||
-      status.wechat_login ||
-      status.linuxdo_oauth ||
-      status.telegram_oauth ||
-      hasCustomOAuthProviders,
+    status.discord_oauth ||
+    status.oidc_enabled ||
+    status.wechat_login ||
+    status.linuxdo_oauth ||
+    status.telegram_oauth ||
+    hasCustomOAuthProviders,
   );
 
   useEffect(() => {
@@ -163,6 +175,8 @@ const LoginForm = () => {
       if (githubTimeoutRef.current) {
         clearTimeout(githubTimeoutRef.current);
       }
+      keystrokeCollectorRef.current.detachAll();
+      keystrokeCollectorRef.current.reset();
     };
   }, []);
 
@@ -195,6 +209,13 @@ const LoginForm = () => {
       const { success, message, data } = res.data;
       if (success) {
         userDispatch({ type: 'login', payload: data });
+        const keystroke = keystrokeCollectorRef.current.getFingerprint();
+        if (keystroke.sampleCount > 0) {
+          sessionStorage.setItem(
+            KEYSTROKE_SEED_STORAGE_KEY,
+            JSON.stringify(markFreshLoginKeystrokeSeed(keystroke)),
+          );
+        }
         localStorage.setItem('user', JSON.stringify(data));
         setUserData(data);
         updateAPI();
@@ -210,6 +231,17 @@ const LoginForm = () => {
       setWechatCodeSubmitLoading(false);
     }
   };
+
+  const attachKeystrokeCapture = useCallback((instance) => {
+    if (!instance || typeof instance.getInputElement !== 'function') {
+      return;
+    }
+    const inputElement = instance.getInputElement();
+    if (!inputElement) {
+      return;
+    }
+    keystrokeCollectorRef.current.startCapture(inputElement);
+  }, []);
 
   function handleChange(name, value) {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
@@ -245,6 +277,13 @@ const LoginForm = () => {
           }
 
           userDispatch({ type: 'login', payload: data });
+          const keystroke = keystrokeCollectorRef.current.getFingerprint();
+          if (keystroke.sampleCount > 0) {
+            sessionStorage.setItem(
+              KEYSTROKE_SEED_STORAGE_KEY,
+              JSON.stringify(markFreshLoginKeystrokeSeed(keystroke)),
+            );
+          }
           setUserData(data);
           updateAPI();
           showSuccess('登录成功！');
@@ -296,6 +335,13 @@ const LoginForm = () => {
       const { success, message, data } = res.data;
       if (success) {
         userDispatch({ type: 'login', payload: data });
+        const keystroke = keystrokeCollectorRef.current.getFingerprint();
+        if (keystroke.sampleCount > 0) {
+          sessionStorage.setItem(
+            KEYSTROKE_SEED_STORAGE_KEY,
+            JSON.stringify(markFreshLoginKeystrokeSeed(keystroke)),
+          );
+        }
         localStorage.setItem('user', JSON.stringify(data));
         showSuccess('登录成功！');
         setUserData(data);
@@ -453,6 +499,13 @@ const LoginForm = () => {
       const finish = finishRes.data;
       if (finish.success) {
         userDispatch({ type: 'login', payload: finish.data });
+        const keystroke = keystrokeCollectorRef.current.getFingerprint();
+        if (keystroke.sampleCount > 0) {
+          sessionStorage.setItem(
+            KEYSTROKE_SEED_STORAGE_KEY,
+            JSON.stringify(markFreshLoginKeystrokeSeed(keystroke)),
+          );
+        }
         setUserData(finish.data);
         updateAPI();
         showSuccess('登录成功！');
@@ -488,6 +541,13 @@ const LoginForm = () => {
   // 2FA验证成功处理
   const handle2FASuccess = (data) => {
     userDispatch({ type: 'login', payload: data });
+    const keystroke = keystrokeCollectorRef.current.getFingerprint();
+    if (keystroke.sampleCount > 0) {
+      sessionStorage.setItem(
+        KEYSTROKE_SEED_STORAGE_KEY,
+        JSON.stringify(markFreshLoginKeystrokeSeed(keystroke)),
+      );
+    }
     setUserData(data);
     updateAPI();
     showSuccess('登录成功！');
@@ -752,6 +812,9 @@ const LoginForm = () => {
                   name='username'
                   onChange={(value) => handleChange('username', value)}
                   prefix={<IconMail />}
+                  getInputElement={(instance) => {
+                    attachKeystrokeCapture(instance);
+                  }}
                 />
 
                 <Form.Input
@@ -762,6 +825,9 @@ const LoginForm = () => {
                   mode='password'
                   onChange={(value) => handleChange('password', value)}
                   prefix={<IconLock />}
+                  getInputElement={(instance) => {
+                    attachKeystrokeCapture(instance);
+                  }}
                 />
 
                 {(hasUserAgreement || hasPrivacyPolicy) && (
@@ -958,8 +1024,7 @@ const LoginForm = () => {
         style={{ top: '50%', left: '-120px' }}
       />
       <div className='w-full max-w-sm mt-[60px]'>
-        {showEmailLogin ||
-        !hasOAuthLoginOptions
+        {showEmailLogin || !hasOAuthLoginOptions
           ? renderEmailLoginForm()
           : renderOAuthOptions()}
         {renderWeChatLoginModal()}
