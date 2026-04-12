@@ -62,6 +62,8 @@ func FullLinkScan() {
 		RefreshTemporalProfilesCron(120)
 	}
 	CleanOldFingerprints()
+	CleanOldIPUAHistory()
+	CleanOldUserSessions()
 	CleanOldBehaviorProfiles()
 	CheckAndUpdateASNData()
 
@@ -311,6 +313,34 @@ func CleanOldFingerprints() {
 	deleted := model.DeleteOldFingerprints(cutoff)
 	if deleted > 0 {
 		common.SysLog("cleaned " + fmt.Sprint(deleted) + " old fingerprint records")
+	}
+}
+
+// CleanOldIPUAHistory 清理过期 IP/UA 历史数据
+func CleanOldIPUAHistory() {
+	days := common.GetFingerprintIPUARetentionDays()
+	cutoff := time.Now().AddDate(0, 0, -days)
+	deleted, err := model.DeleteOldIPUAHistory(cutoff)
+	if err != nil {
+		common.SysError("failed to clean old ip_ua_history records: " + err.Error())
+		return
+	}
+	if deleted > 0 {
+		common.SysLog("cleaned " + fmt.Sprint(deleted) + " old ip_ua_history records")
+	}
+}
+
+// CleanOldUserSessions 清理过期用户会话数据
+func CleanOldUserSessions() {
+	days := common.GetFingerprintSessionRetentionDays()
+	cutoff := time.Now().AddDate(0, 0, -days)
+	deleted, err := model.DeleteOldUserSessions(cutoff)
+	if err != nil {
+		common.SysError("failed to clean old user_sessions records: " + err.Error())
+		return
+	}
+	if deleted > 0 {
+		common.SysLog("cleaned " + fmt.Sprint(deleted) + " old user_sessions records")
 	}
 }
 

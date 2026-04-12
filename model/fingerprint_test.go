@@ -17,7 +17,7 @@ func initFingerprintModelTestDB(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(8)
-	require.NoError(t, db.AutoMigrate(&UserDeviceProfile{}))
+	require.NoError(t, db.AutoMigrate(&UserDeviceProfile{}, &Fingerprint{}))
 	DB = db
 }
 
@@ -112,7 +112,7 @@ func TestUpsertDeviceProfile_ConcurrentSameDeviceDoesNotFail(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, workers)
 
-	for i := 0; i < workers; i++ {
+	for i := range workers {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -153,3 +153,94 @@ func TestUpsertDeviceProfile_ConcurrentSameDeviceDoesNotFail(t *testing.T) {
 	require.Len(t, profiles, 1)
 	require.Equal(t, workers, profiles[0].SeenCount)
 }
+
+func TestFingerprintInsert_NormalizesStorageHeavyFields(t *testing.T) {
+	initFingerprintModelTestDB(t)
+	t.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", "5")
+	t.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", "4")
+	t.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "10")
+	t.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", "6")
+
+	fp := &Fingerprint{
+		UserID:         7,
+		IPAddress:      "1.2.3.4",
+		CompositeHash:  "cmp",
+		UserAgent:      "  abcdef  ",
+		FontsList:      "  xyzuvw  ",
+		WebRTCLocalIPs: " [\"10.0.0.1\"] ",
+		WebRTCPublicIPs: " [\"8.8.8.8\"] ",
+		PageURL:        "  https://example.com/path  ",
+	}
+	require.NoError(t, fp.Insert())
+
+	var got Fingerprint
+	require.NoError(t, DB.Where("user_id = ?", 7).First(&got).Error)
+	require.Equal(t, "abcde", got.UserAgent)
+	require.Equal(t, "xyzu", got.FontsList)
+	require.Equal(t, "[]", got.WebRTCLocalIPs)
+	require.Equal(t, "[]", got.WebRTCPublicIPs)
+	require.Equal(t, "https:", got.PageURL)
+}
+
+func TestNormalizeWebRTCIPList_EmptyInputKeepsEmpty(t *testing.T) {
+	require.Equal(t, "", normalizeWebRTCIPList("", 256))
+	require.Equal(t, "", normalizeWebRTCIPList("   ", 256))
+}
+
+func TestFingerprintInsert_CanonicalizesWebRTCJSON(t *testing.T) {
+	initFingerprintModelTestDB(t)
+	t.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "256")
+
+	fp := &Fingerprint{
+		UserID:          8,
+		IPAddress:       "2.2.2.2",
+		CompositeHash:   "cmp-2",
+		WebRTCLocalIPs:  " [\"192.168.1.9\"] ",
+		WebRTCPublicIPs: " [\"8.8.8.8\"] ",
+	}
+	require.NoError(t, fp.Insert())
+
+	var got Fingerprint
+	require.NoError(t, DB.Where("user_id = ?", 8).First(&got).Error)
+	require.Equal(t, `["192.168.1.9"]`, got.WebRTCLocalIPs)
+	require.Equal(t, `["8.8.8.8"]`, got.WebRTCPublicIPs)
+}
+
+func TestFingerprintInsert_InvalidWebRTCBecomesEmptyArray(t *testing.T) {
+	initFingerprintModelTestDB(t)
+	t.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "256")
+
+	fp := &Fingerprint{
+		UserID:          9,
+		IPAddress:       "3.3.3.3",
+		CompositeHash:   "cmp-3",
+		WebRTCLocalIPs:  "not-json",
+		WebRTCPublicIPs: "1.1.1.1,2.2.2.2",
+	}
+	require.NoError(t, fp.Insert())
+
+	var got Fingerprint
+	require.NoError(t, DB.Where("user_id = ?", 9).First(&got).Error)
+	require.Equal(t, "[]", got.WebRTCLocalIPs)
+	require.Equal(t, "[]", got.WebRTCPublicIPs)
+}
+
+func TestFingerprintInsert_WebRTCOverLimitBecomesEmptyArray(t *testing.T) {
+	initFingerprintModelTestDB(t)
+	t.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "8")
+
+	fp := &Fingerprint{
+		UserID:          10,
+		IPAddress:       "4.4.4.4",
+		CompositeHash:   "cmp-4",
+		WebRTCLocalIPs:  `["192.168.1.10"]`,
+		WebRTCPublicIPs: `["203.0.113.99"]`,
+	}
+	require.NoError(t, fp.Insert())
+
+	var got Fingerprint
+	require.NoError(t, DB.Where("user_id = ?", 10).First(&got).Error)
+	require.Equal(t, "[]", got.WebRTCLocalIPs)
+	require.Equal(t, "[]", got.WebRTCPublicIPs)
+}
+

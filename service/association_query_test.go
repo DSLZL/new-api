@@ -106,3 +106,26 @@ func TestQueryUserAssociations_IncludesMediaDeviceGroupHashCandidate(t *testing.
 	}
 	require.True(t, found, "expected candidate user discovered via media_device_group_hash")
 }
+
+func TestBuildAssociationCacheKey_IncludesQueryOptions(t *testing.T) {
+	baseFingerprint := &model.Fingerprint{ID: 8899, UserID: 101}
+
+	defaultOptions := normalizeAssociationQueryOptions(nil)
+	lightweightOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
+		IncludeDetails:   false,
+		IncludeSharedIPs: false,
+	})
+	candidateOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
+		IncludeDetails:   true,
+		IncludeSharedIPs: true,
+		CandidateUserID:  202,
+	})
+
+	keyDefault := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, defaultOptions)
+	keyLightweight := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, lightweightOptions)
+	keyCandidate := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, candidateOptions)
+
+	require.NotEqual(t, keyDefault, keyLightweight)
+	require.NotEqual(t, keyDefault, keyCandidate)
+	require.NotEqual(t, keyLightweight, keyCandidate)
+}

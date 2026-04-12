@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -225,4 +226,9 @@ func ReplaceUserSessionsBySource(userID int, source string, sessions []UserSessi
 	}
 
 	return tx.Commit().Error
+}
+
+func DeleteOldUserSessions(before time.Time) (int64, error) {
+	result := DB.Where("ended_at < ?", before).Delete(&UserSession{})
+	return result.RowsAffected, result.Error
 }

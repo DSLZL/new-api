@@ -2,7 +2,10 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -52,6 +55,129 @@ type ExistingLinkInfo struct {
 	Status string `json:"status"`
 }
 
+// AssociationQueryOptions 关联查询选项
+// 默认行为：包含 details 与 shared_ips，且不过滤候选用户。
+type AssociationQueryOptions struct {
+	IncludeDetails   bool
+	IncludeSharedIPs bool
+	CandidateUserID  int
+}
+
+const (
+	associationCacheVersion      = "v2"
+	associationCacheBaseMode     = "default"
+	associationCacheBasePrefix   = "dp"
+	associationCacheNegative     = "__none__"
+	associationCacheTTL          = 30 * time.Minute
+	associationNegativeCacheTTL  = 5 * time.Minute
+)
+
+func normalizeAssociationMinConfidence(val float64) float64 {
+	if math.IsNaN(val) || math.IsInf(val, 0) {
+		return 0
+	}
+	if val < 0 {
+		return 0
+	}
+	if val > 1 {
+		return 1
+	}
+	return math.Round(val*1000) / 1000
+}
+
+func normalizeAssociationLimit(limit int) int {
+	if limit < 1 {
+		return 1
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func buildAssociationCacheBaseTag(baseFingerprint *model.Fingerprint) string {
+	if baseFingerprint == nil {
+		return associationCacheBaseMode
+	}
+	if baseFingerprint.ID > 0 {
+		return associationCacheBasePrefix + strconv.FormatInt(baseFingerprint.ID, 10)
+	}
+	if baseFingerprint.UserID > 0 {
+		return associationCacheBasePrefix + "u" + strconv.Itoa(baseFingerprint.UserID)
+	}
+	return associationCacheBasePrefix + "custom"
+}
+
+func normalizeAssociationCandidateUserID(candidateUserID int) int {
+	if candidateUserID > 0 {
+		return candidateUserID
+	}
+	return 0
+}
+
+func parseAssociationCacheNegativePayload(payload string) (int, bool) {
+	if payload == associationCacheNegative {
+		return 0, true
+	}
+	if !strings.HasPrefix(payload, associationCacheNegative+":") {
+		return 0, false
+	}
+	countStr := strings.TrimPrefix(payload, associationCacheNegative+":")
+	count, err := strconv.Atoi(countStr)
+	if err != nil || count < 0 {
+		return 0, false
+	}
+	return count, true
+}
+
+func buildAssociationCacheNegativePayload(candidatesFound int) string {
+	if candidatesFound < 0 {
+		candidatesFound = 0
+	}
+	return associationCacheNegative + ":" + strconv.Itoa(candidatesFound)
+}
+
+func normalizeAssociationQueryOptions(options *AssociationQueryOptions) AssociationQueryOptions {
+	normalized := AssociationQueryOptions{
+		IncludeDetails:   true,
+		IncludeSharedIPs: true,
+	}
+	if options == nil {
+		return normalized
+	}
+	normalized.IncludeDetails = options.IncludeDetails
+	normalized.IncludeSharedIPs = options.IncludeSharedIPs
+	if options.CandidateUserID > 0 {
+		normalized.CandidateUserID = options.CandidateUserID
+	}
+	return normalized
+}
+
+func buildAssociationCacheKey(targetUserID int, minConfidence float64, limit int, baseFingerprint *model.Fingerprint, queryOptions AssociationQueryOptions) string {
+	normalizedMin := normalizeAssociationMinConfidence(minConfidence)
+	normalizedLimit := normalizeAssociationLimit(limit)
+	baseTag := buildAssociationCacheBaseTag(baseFingerprint)
+	detailFlag := 0
+	if queryOptions.IncludeDetails {
+		detailFlag = 1
+	}
+	sharedIPFlag := 0
+	if queryOptions.IncludeSharedIPs {
+		sharedIPFlag = 1
+	}
+	return fmt.Sprintf(
+		"fp:assoc:%s:u:%d:min:%.3f:limit:%d:base:%s:d:%d:s:%d:c:%d",
+		associationCacheVersion,
+		targetUserID,
+		normalizedMin,
+		normalizedLimit,
+		baseTag,
+		detailFlag,
+		sharedIPFlag,
+		queryOptions.CandidateUserID,
+	)
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ★★★ 核心修改：QueryUserAssociations ★★★
 //
@@ -74,33 +200,54 @@ func QueryUserAssociations(
 	forceRefresh bool,
 	baseFingerprint *model.Fingerprint, // ★ 改动: int64 → *model.Fingerprint
 ) (*AssociationResult, error) {
+	return QueryUserAssociationsWithOptions(targetUserID, minConfidence, limit, forceRefresh, baseFingerprint, nil)
+}
+
+func QueryUserAssociationsWithOptions(
+	targetUserID int,
+	minConfidence float64,
+	limit int,
+	forceRefresh bool,
+	baseFingerprint *model.Fingerprint,
+	options *AssociationQueryOptions,
+) (*AssociationResult, error) {
 	startTime := time.Now()
 
 	if !common.FingerprintEnabled {
 		return nil, fmt.Errorf("fingerprint system is not enabled")
 	}
 
+	normalizedOptions := normalizeAssociationQueryOptions(options)
+	candidateUserID := normalizeAssociationCandidateUserID(normalizedOptions.CandidateUserID)
+	if candidateUserID == targetUserID {
+		candidateUserID = 0
+	}
+	normalizedOptions.CandidateUserID = candidateUserID
+	includeDetails := normalizedOptions.IncludeDetails
+	includeSharedIPs := normalizedOptions.IncludeSharedIPs
+
+	normalizedMinConfidence := normalizeAssociationMinConfidence(minConfidence)
+	normalizedLimit := normalizeAssociationLimit(limit)
+	cacheKey := buildAssociationCacheKey(targetUserID, normalizedMinConfidence, normalizedLimit, baseFingerprint, normalizedOptions)
+
 	// ──────────────────────────────────────────────────────────
 	// 1. 检查缓存
-	//    ★ 改动: selectedFPID == 0 → baseFingerprint == nil
-	//    指定了特定设备档案比对时不使用全局缓存
+	//    缓存键纳入 user/min_confidence/limit/baseFingerprint 标识
 	// ──────────────────────────────────────────────────────────
-	if !forceRefresh && common.RedisEnabled && baseFingerprint == nil {
-		cacheKey := fmt.Sprintf("fp:assoc:%d", targetUserID)
+	if !forceRefresh && common.RedisEnabled {
 		cached, err := common.RedisGet(cacheKey)
 		if err == nil && cached != "" {
+			if candidatesFound, ok := parseAssociationCacheNegativePayload(cached); ok {
+				return &AssociationResult{
+					TargetUser:      getUserBrief(targetUserID),
+					Associations:    []AssociationItem{},
+					AnalyzedAt:      time.Now(),
+					CandidatesFound: candidatesFound,
+					TimeCostMs:      time.Since(startTime).Milliseconds(),
+				}, nil
+			}
 			var result AssociationResult
 			if common.Unmarshal([]byte(cached), &result) == nil {
-				filtered := make([]AssociationItem, 0)
-				for _, a := range result.Associations {
-					if a.Confidence >= minConfidence {
-						filtered = append(filtered, a)
-					}
-				}
-				result.Associations = filtered
-				if len(result.Associations) > limit {
-					result.Associations = result.Associations[:limit]
-				}
 				return &result, nil
 			}
 		}
@@ -145,9 +292,13 @@ func QueryUserAssociations(
 	for _, fp := range targetFPs {
 		appendUnique := func(ids []int) {
 			for _, uid := range ids {
-				if uid != targetUserID {
-					candidateSet[uid] = true
+				if uid == targetUserID {
+					continue
 				}
+				if candidateUserID > 0 && uid != candidateUserID {
+					continue
+				}
+				candidateSet[uid] = true
 			}
 		}
 
@@ -183,9 +334,13 @@ func QueryUserAssociations(
 	targetIPs := model.GetUserIPs(targetUserID)
 	for _, ip := range targetIPs {
 		for _, uid := range model.FindUsersByIP(ip) {
-			if uid != targetUserID {
-				candidateSet[uid] = true
+			if uid == targetUserID {
+				continue
 			}
+			if candidateUserID > 0 && uid != candidateUserID {
+				continue
+			}
+			candidateSet[uid] = true
 		}
 	}
 
@@ -202,6 +357,9 @@ func QueryUserAssociations(
 	associations := make([]AssociationItem, 0)
 
 	for candidateUID := range candidateSet {
+		if candidateUserID > 0 && candidateUID != candidateUserID {
+			continue
+		}
 		candidateFPs := model.GetLatestFingerprints(candidateUID, 10)
 		// ★ 新增兜底: 候选用户流水表也可能为空
 		if len(candidateFPs) == 0 {
@@ -238,8 +396,6 @@ func QueryUserAssociations(
 			continue
 		}
 
-		sharedIPs := GetSharedIPs(targetUserID, candidateUID)
-
 		item := AssociationItem{
 			User:              getUserBrief(candidateUID),
 			Confidence:        bestConf,
@@ -249,8 +405,12 @@ func QueryUserAssociations(
 			RiskLevel:         confidenceToRiskLevel(bestConf),
 			MatchDimensions:   bestMatchDims,
 			TotalDimensions:   bestTotalDims,
-			Details:           bestDetails,
-			SharedIPs:         sharedIPs,
+		}
+		if includeDetails {
+			item.Details = bestDetails
+		}
+		if includeSharedIPs {
+			item.SharedIPs = GetSharedIPs(targetUserID, candidateUID)
 		}
 
 		// 检查是否已有 Link 记录
@@ -273,34 +433,35 @@ func QueryUserAssociations(
 		return associations[i].Confidence > associations[j].Confidence
 	})
 
+	filtered := make([]AssociationItem, 0)
+	for _, a := range associations {
+		if a.Confidence >= normalizedMinConfidence {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) > normalizedLimit {
+		filtered = filtered[:normalizedLimit]
+	}
+
 	fullResult := &AssociationResult{
 		TargetUser:      getUserBrief(targetUserID),
-		Associations:    associations,
+		Associations:    filtered,
 		AnalyzedAt:      time.Now(),
 		CandidatesFound: len(candidateSet),
 		TimeCostMs:      time.Since(startTime).Milliseconds(),
 	}
 
-	// ★ 改动: 仅在未指定特定设备档案时缓存（全局结果）
-	if common.RedisEnabled && baseFingerprint == nil {
+	if common.RedisEnabled {
+		if len(fullResult.Associations) == 0 {
+			negativePayload := buildAssociationCacheNegativePayload(fullResult.CandidatesFound)
+			_ = common.RedisSet(cacheKey, negativePayload, associationNegativeCacheTTL)
+			return fullResult, nil
+		}
 		if data, err := common.Marshal(fullResult); err == nil {
-			cacheKey := fmt.Sprintf("fp:assoc:%d", targetUserID)
-			common.RedisSet(cacheKey, string(data), 30*time.Minute)
+			_ = common.RedisSet(cacheKey, string(data), associationCacheTTL)
 		}
 	}
 
-	// 按 minConfidence 过滤返回
-	filtered := make([]AssociationItem, 0)
-	for _, a := range associations {
-		if a.Confidence >= minConfidence {
-			filtered = append(filtered, a)
-		}
-	}
-	if len(filtered) > limit {
-		filtered = filtered[:limit]
-	}
-
-	fullResult.Associations = filtered
 	return fullResult, nil
 }
 

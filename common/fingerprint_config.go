@@ -66,6 +66,53 @@ func GetFingerprintRetentionDays() int {
 	return GetEnvOrDefault("FINGERPRINT_RETENTION_DAYS", 90)
 }
 
+func GetFingerprintIPUAWriteSampleRate() int {
+	rate := GetEnvOrDefault("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", 100)
+	if rate < 1 {
+		return 1
+	}
+	if rate > 100 {
+		return 100
+	}
+	return rate
+}
+
+func GetFingerprintIPUAUserHistoryLimit() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", 200)
+}
+
+func GetFingerprintIPUAUserHistoryCleanupBatch() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", 50)
+}
+
+func GetFingerprintIPUAWriteMinIntervalSeconds() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", 300)
+}
+
+func GetFingerprintIPUARetentionDays() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_IPUA_RETENTION_DAYS", GetFingerprintRetentionDays())
+}
+
+func GetFingerprintSessionRetentionDays() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_SESSION_RETENTION_DAYS", GetFingerprintRetentionDays())
+}
+
+func GetFingerprintMaxUserAgentLength() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_MAX_USER_AGENT_LENGTH", 512)
+}
+
+func GetFingerprintMaxFontsListLength() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_MAX_FONTS_LIST_LENGTH", 1024)
+}
+
+func GetFingerprintMaxWebRTCIPsLength() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", 256)
+}
+
+func GetFingerprintMaxPageURLLength() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_MAX_PAGE_URL_LENGTH", 256)
+}
+
 func parseValidFingerprintWeight(val string) (float64, bool) {
 	f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
 	if err != nil {

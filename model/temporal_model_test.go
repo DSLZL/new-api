@@ -563,3 +563,38 @@ func TestUpsertUserSession_DoesNotOverwriteExistingSourceOnConflict(t *testing.T
 	require.Equal(t, "", got.DeviceKey)
 	require.Equal(t, "", got.IPAddress)
 }
+
+func TestDeleteOldUserSessions_RemovesStaleOnly(t *testing.T) {
+	initTemporalModelTestDB(t)
+
+	now := time.Now().UTC()
+	require.NoError(t, DB.Create(&UserSession{
+		UserID:          9801,
+		SessionID:       "stale-session",
+		StartedAt:       now.Add(-10 * 24 * time.Hour),
+		EndedAt:         now.Add(-10 * 24 * time.Hour),
+		DurationSeconds: 60,
+		EventCount:      1,
+		Source:          "fingerprint",
+	}).Error)
+	require.NoError(t, DB.Create(&UserSession{
+		UserID:          9802,
+		SessionID:       "fresh-session",
+		StartedAt:       now.Add(-2 * 24 * time.Hour),
+		EndedAt:         now.Add(-2 * 24 * time.Hour),
+		DurationSeconds: 60,
+		EventCount:      1,
+		Source:          "fingerprint",
+	}).Error)
+
+	deleted, err := DeleteOldUserSessions(now.Add(-5 * 24 * time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+
+	var staleCount int64
+	var freshCount int64
+	require.NoError(t, DB.Model(&UserSession{}).Where("user_id = ?", 9801).Count(&staleCount).Error)
+	require.NoError(t, DB.Model(&UserSession{}).Where("user_id = ?", 9802).Count(&freshCount).Error)
+	require.Equal(t, int64(0), staleCount)
+	require.Equal(t, int64(1), freshCount)
+}

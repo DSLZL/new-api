@@ -166,11 +166,14 @@ const UserAssociations = ({ userId: initialUserId }) => {
   const [assocTemporalProfiles, setAssocTemporalProfiles] = useState({});
   const [assocNetworkProfiles, setAssocNetworkProfiles] = useState({});
   const [assocProfileLoading, setAssocProfileLoading] = useState({});
+  const [associationDetails, setAssociationDetails] = useState({});
+  const [associationDetailLoading, setAssociationDetailLoading] = useState({});
   const activeUserIdRef = useRef(safeInt(initialUserId));
   const queryRequestSeqRef = useRef(0);
   const profileRequestSeqRef = useRef(0);
   const dashboardRequestSeqRef = useRef(0);
   const assocProfileRequestSeqRef = useRef({});
+  const associationDetailRequestSeqRef = useRef({});
   const targetDevicesRequestSeqRef = useRef(0);
   const deviceProfilesRequestSeqRef = useRef({});
 
@@ -221,10 +224,13 @@ const UserAssociations = ({ userId: initialUserId }) => {
     setAssocTemporalProfiles({});
     setAssocNetworkProfiles({});
     setAssocProfileLoading({});
+    setAssociationDetails({});
+    setAssociationDetailLoading({});
     queryRequestSeqRef.current += 1;
     profileRequestSeqRef.current += 1;
     dashboardRequestSeqRef.current += 1;
     assocProfileRequestSeqRef.current = {};
+    associationDetailRequestSeqRef.current = {};
     targetDevicesRequestSeqRef.current += 1;
     deviceProfilesRequestSeqRef.current = {};
   }, []);
@@ -432,6 +438,102 @@ const UserAssociations = ({ userId: initialUserId }) => {
     ],
   );
 
+  const fetchAssociationDetails = useCallback(
+    async (assocUserId) => {
+      const safeAssocUserId = safeInt(assocUserId);
+      const targetUserId = safeInt(inputUserId);
+      if (!safeAssocUserId || !targetUserId) {
+        return null;
+      }
+
+      if (associationDetailLoading[safeAssocUserId]) {
+        return associationDetails[safeAssocUserId] || null;
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(
+          associationDetails,
+          safeAssocUserId,
+        )
+      ) {
+        return associationDetails[safeAssocUserId] || null;
+      }
+
+      const requestId =
+        (associationDetailRequestSeqRef.current[safeAssocUserId] || 0) + 1;
+      associationDetailRequestSeqRef.current = {
+        ...associationDetailRequestSeqRef.current,
+        [safeAssocUserId]: requestId,
+      };
+
+      setAssociationDetailLoading((prev) => ({
+        ...prev,
+        [safeAssocUserId]: true,
+      }));
+
+      try {
+        let url = `/api/admin/fingerprint/user/${targetUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=false&include_details=true&include_shared_ips=true&candidate_user_id=${safeAssocUserId}`;
+        const safeProfileId = safeInt(selectedProfileId);
+        if (safeProfileId) {
+          url += `&device_profile_id=${safeProfileId}`;
+        }
+
+        const res = await API.get(url);
+        if (
+          activeUserIdRef.current !== targetUserId ||
+          associationDetailRequestSeqRef.current[safeAssocUserId] !== requestId
+        ) {
+          return null;
+        }
+
+        if (!res.data.success) {
+          showError(res.data.message || t('加载关联详情失败'));
+          return null;
+        }
+
+        const detailAssoc = (res.data.data?.associations || []).find(
+          (item) => safeInt(item?.user?.id) === safeAssocUserId,
+        );
+        const normalizedDetail = detailAssoc || null;
+
+        setAssociationDetails((prev) => ({
+          ...prev,
+          [safeAssocUserId]: normalizedDetail,
+        }));
+
+        return normalizedDetail;
+      } catch (e) {
+        if (
+          activeUserIdRef.current !== targetUserId ||
+          associationDetailRequestSeqRef.current[safeAssocUserId] !== requestId
+        ) {
+          return null;
+        }
+
+        showError(e.message || t('加载关联详情失败'));
+        return null;
+      } finally {
+        if (
+          activeUserIdRef.current === targetUserId &&
+          associationDetailRequestSeqRef.current[safeAssocUserId] === requestId
+        ) {
+          setAssociationDetailLoading((prev) => ({
+            ...prev,
+            [safeAssocUserId]: false,
+          }));
+        }
+      }
+    },
+    [
+      associationDetailLoading,
+      associationDetails,
+      inputUserId,
+      minConfidence,
+      selectedProfileId,
+      t,
+    ],
+  );
+
   const queryAssociations = useCallback(
     async (refresh = false, profileId = selectedProfileId) => {
       const safeUserId = safeInt(inputUserId);
@@ -444,9 +546,13 @@ const UserAssociations = ({ userId: initialUserId }) => {
       const requestId = queryRequestSeqRef.current + 1;
       queryRequestSeqRef.current = requestId;
 
+      setAssociationDetails({});
+      setAssociationDetailLoading({});
+      associationDetailRequestSeqRef.current = {};
+
       setLoading(true);
       try {
-        let url = `/api/admin/fingerprint/user/${safeUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=${refresh}`;
+        let url = `/api/admin/fingerprint/user/${safeUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=${refresh}&include_details=false&include_shared_ips=false`;
         const safeProfileId = safeInt(profileId);
         if (safeProfileId) {
           url += `&device_profile_id=${safeProfileId}`;
@@ -801,14 +907,16 @@ const UserAssociations = ({ userId: initialUserId }) => {
   );
 
   const getVpnRiskHints = useCallback(
-    (assoc) => {
+    (assocSummary, assocDetail) => {
       const hints = [];
-      const assocNet = assocNetworkProfiles[assoc.user.id];
+      const assocNet = assocNetworkProfiles[assocSummary.user.id];
       const targetRate = Number(networkProfile?.datacenter_rate || 0);
       const assocRate = Number(assocNet?.datacenter_rate || 0);
       const datacenterRatio = Math.max(targetRate, assocRate);
-      const sharedIPs = Array.isArray(assoc.shared_ips) ? assoc.shared_ips : [];
-      const vpnDims = (assoc.details || []).filter(
+      const sharedIPs = Array.isArray(assocDetail?.shared_ips)
+        ? assocDetail.shared_ips
+        : [];
+      const vpnDims = (assocDetail?.details || []).filter(
         (item) =>
           item.dimension === 'dns_resolver_ip' ||
           item.dimension === 'ip_exact' ||
@@ -865,10 +973,12 @@ const UserAssociations = ({ userId: initialUserId }) => {
   );
 
   const getSignalSummaryByCategory = useCallback(
-    (assoc) => {
-      const details = Array.isArray(assoc.details) ? assoc.details : [];
+    (assocSummary, assocDetail) => {
+      const details = Array.isArray(assocDetail?.details)
+        ? assocDetail.details
+        : [];
       const matchedSet = new Set(
-        (assoc.matched_dimensions || []).map((item) => String(item)),
+        (assocSummary.matched_dimensions || []).map((item) => String(item)),
       );
       const categoryOrder = ['device', 'network', 'behavior', 'environment'];
       const labels = {
@@ -1259,7 +1369,12 @@ const UserAssociations = ({ userId: initialUserId }) => {
             ) : (
               <div className='space-y-3'>
                 {result.associations.map((assoc, idx) => {
-                  const riskTag = getRiskTag(assoc.risk_level);
+                  const assocUserId = safeInt(assoc.user?.id);
+                  const assocDetail = assocUserId
+                    ? associationDetails[assocUserId]
+                    : null;
+                  const effectiveAssoc = assocDetail || assoc;
+                  const riskTag = getRiskTag(effectiveAssoc.risk_level);
                   const assocCardKey =
                     assoc.user?.id || assoc.device_profile_id || idx;
                   return (
@@ -1289,16 +1404,21 @@ const UserAssociations = ({ userId: initialUserId }) => {
 
                         <div className='flex items-center gap-2'>
                           <Progress
-                            percent={Math.round(assoc.confidence * 100)}
+                            percent={Math.round(
+                              effectiveAssoc.confidence * 100,
+                            )}
                             size='small'
                             stroke={
-                              getConfidenceColor(assoc.confidence) === 'red'
+                              getConfidenceColor(effectiveAssoc.confidence) ===
+                              'red'
                                 ? '#f5222d'
-                                : getConfidenceColor(assoc.confidence) ===
-                                    'orange'
+                                : getConfidenceColor(
+                                      effectiveAssoc.confidence,
+                                    ) === 'orange'
                                   ? '#fa8c16'
-                                  : getConfidenceColor(assoc.confidence) ===
-                                      'yellow'
+                                  : getConfidenceColor(
+                                        effectiveAssoc.confidence,
+                                      ) === 'yellow'
                                     ? '#faad14'
                                     : '#52c41a'
                             }
@@ -1310,14 +1430,14 @@ const UserAssociations = ({ userId: initialUserId }) => {
                             {riskTag.text}
                           </Tag>
                           <Tag
-                            color={getTierStyle(assoc.tier).color}
+                            color={getTierStyle(effectiveAssoc.tier).color}
                             size='small'
                           >
-                            {getTierStyle(assoc.tier).label}
+                            {getTierStyle(effectiveAssoc.tier).label}
                           </Tag>
                           <Tag size='small'>
-                            {assoc.match_dimensions}/{assoc.total_dimensions}{' '}
-                            {t('维度匹配')}
+                            {effectiveAssoc.match_dimensions}/
+                            {effectiveAssoc.total_dimensions} {t('维度匹配')}
                           </Tag>
                         </div>
                       </div>
@@ -1330,28 +1450,31 @@ const UserAssociations = ({ userId: initialUserId }) => {
                           </Text>
                           <Tag
                             size='small'
-                            color={getTierStyle(assoc.tier).color}
+                            color={getTierStyle(effectiveAssoc.tier).color}
                           >
-                            {getTierStyle(assoc.tier).label}
+                            {getTierStyle(effectiveAssoc.tier).label}
                           </Tag>
                         </div>
                         <div className='text-xs text-gray-700 mb-1'>
-                          {t('判定说明')}: {assoc.explanation || '-'}
+                          {t('判定说明')}: {effectiveAssoc.explanation || '-'}
                         </div>
                         <div className='flex flex-wrap items-center gap-1'>
                           <Text size='small' type='secondary'>
                             {t('命中维度')}:
                           </Text>
-                          {(assoc.matched_dimensions || []).length === 0 ? (
+                          {(effectiveAssoc.matched_dimensions || []).length ===
+                          0 ? (
                             <Tag size='small' color='grey'>
                               {t('无')}
                             </Tag>
                           ) : (
-                            (assoc.matched_dimensions || []).map((dim) => (
-                              <Tag key={dim} size='small' color='green'>
-                                {dim}
-                              </Tag>
-                            ))
+                            (effectiveAssoc.matched_dimensions || []).map(
+                              (dim) => (
+                                <Tag key={dim} size='small' color='green'>
+                                  {dim}
+                                </Tag>
+                              ),
+                            )
                           )}
                         </div>
                       </div>
@@ -1362,56 +1485,59 @@ const UserAssociations = ({ userId: initialUserId }) => {
                           {t('命中维度概览 / 信号摘要')}
                         </Text>
                         <div className='mt-2 grid grid-cols-1 md:grid-cols-2 gap-2'>
-                          {getSignalSummaryByCategory(assoc).map((group) => (
-                            <div
-                              key={`${assoc.user.id}-${group.category}`}
-                              className='rounded-md border border-gray-100 p-2 bg-white'
-                            >
-                              <div className='flex items-center justify-between mb-1'>
-                                <Text size='small'>
-                                  {getCategoryIcon(group.category)}{' '}
-                                  {group.label}
-                                </Text>
-                                <Tag
-                                  size='small'
-                                  color={
-                                    group.matchedCount > 0 ? 'green' : 'grey'
-                                  }
-                                >
-                                  {group.matchedCount}/{group.totalCount}
-                                </Tag>
-                              </div>
-                              <div className='flex flex-wrap gap-1'>
-                                {group.topSignals.length === 0 ? (
-                                  <Text type='tertiary' size='small'>
-                                    {t('暂无信号')}
+                          {getSignalSummaryByCategory(assoc, assocDetail).map(
+                            (group) => (
+                              <div
+                                key={`${assoc.user.id}-${group.category}`}
+                                className='rounded-md border border-gray-100 p-2 bg-white'
+                              >
+                                <div className='flex items-center justify-between mb-1'>
+                                  <Text size='small'>
+                                    {getCategoryIcon(group.category)}{' '}
+                                    {group.label}
                                   </Text>
-                                ) : (
-                                  group.topSignals.map((signal) => (
-                                    <Tag
-                                      key={`${assoc.user.id}-${group.category}-${signal.dimension}`}
-                                      size='small'
-                                      color={
-                                        signal.highlighted ? 'green' : 'grey'
-                                      }
-                                    >
-                                      {signal.display_name} · w
-                                      {(signal.weight || 0).toFixed(2)}
-                                    </Tag>
-                                  ))
-                                )}
+                                  <Tag
+                                    size='small'
+                                    color={
+                                      group.matchedCount > 0 ? 'green' : 'grey'
+                                    }
+                                  >
+                                    {group.matchedCount}/{group.totalCount}
+                                  </Tag>
+                                </div>
+                                <div className='flex flex-wrap gap-1'>
+                                  {group.topSignals.length === 0 ? (
+                                    <Text type='tertiary' size='small'>
+                                      {t('暂无信号')}
+                                    </Text>
+                                  ) : (
+                                    group.topSignals.map((signal) => (
+                                      <Tag
+                                        key={`${assoc.user.id}-${group.category}-${signal.dimension}`}
+                                        size='small'
+                                        color={
+                                          signal.highlighted ? 'green' : 'grey'
+                                        }
+                                      >
+                                        {signal.display_name} · w
+                                        {(signal.weight || 0).toFixed(2)}
+                                      </Tag>
+                                    ))
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            ),
+                          )}
                         </div>
                       </div>
 
                       {/* 互斥/时间信号 */}
                       {(() => {
-                        const timeSignal = (assoc.details || []).find(
+                        const detailSignals = assocDetail?.details || [];
+                        const timeSignal = detailSignals.find(
                           (detail) => detail.dimension === 'time_similarity',
                         );
-                        const mutualSignal = (assoc.details || []).find(
+                        const mutualSignal = detailSignals.find(
                           (detail) => detail.dimension === 'mutual_exclusion',
                         );
                         if (!timeSignal && !mutualSignal) return null;
@@ -1469,27 +1595,36 @@ const UserAssociations = ({ userId: initialUserId }) => {
                       })()}
 
                       {/* 共享IP */}
-                      {assoc.shared_ips && assoc.shared_ips.length > 0 && (
-                        <div className='mb-2'>
-                          <Text size='small' type='tertiary'>
-                            {t('共享IP')}:{' '}
-                          </Text>
-                          {assoc.shared_ips.slice(0, 5).map((ip, i) => (
-                            <Tag key={i} size='small' color='grey'>
-                              {ip}
-                            </Tag>
-                          ))}
-                          {assoc.shared_ips.length > 5 && (
+                      {associationDetailLoading[assocUserId] &&
+                        !assocDetail && (
+                          <div className='mb-2'>
                             <Text size='small' type='tertiary'>
-                              ...+{assoc.shared_ips.length - 5}
+                              {t('正在加载详细信号...')}
                             </Text>
-                          )}
-                        </div>
-                      )}
+                          </div>
+                        )}
+                      {assocDetail?.shared_ips &&
+                        assocDetail.shared_ips.length > 0 && (
+                          <div className='mb-2'>
+                            <Text size='small' type='tertiary'>
+                              {t('共享IP')}:{' '}
+                            </Text>
+                            {assocDetail.shared_ips.slice(0, 5).map((ip, i) => (
+                              <Tag key={i} size='small' color='grey'>
+                                {ip}
+                              </Tag>
+                            ))}
+                            {assocDetail.shared_ips.length > 5 && (
+                              <Text size='small' type='tertiary'>
+                                ...+{assocDetail.shared_ips.length - 5}
+                              </Text>
+                            )}
+                          </div>
+                        )}
 
                       {/* VPN/代理风险标记 */}
                       {(() => {
-                        const hints = getVpnRiskHints(assoc);
+                        const hints = getVpnRiskHints(assoc, assocDetail);
                         if (!hints.length) return null;
                         return (
                           <div className='mb-2 rounded-lg border border-red-100 bg-red-50 p-2'>
@@ -1577,6 +1712,7 @@ const UserAssociations = ({ userId: initialUserId }) => {
                               : [];
                           if (keys.includes('details')) {
                             fetchAssociationProfiles(assoc.user.id);
+                            fetchAssociationDetails(assoc.user.id);
                           }
                         }}
                       >
@@ -1600,9 +1736,10 @@ const UserAssociations = ({ userId: initialUserId }) => {
                                   size='small'
                                   type='primary'
                                   theme='light'
-                                  onClick={() =>
-                                    fetchAssociationProfiles(assoc.user.id)
-                                  }
+                                  onClick={() => {
+                                    fetchAssociationProfiles(assoc.user.id);
+                                    fetchAssociationDetails(assoc.user.id);
+                                  }}
                                   className='mb-2'
                                 >
                                   {t('加载关联用户画像')}
@@ -1679,9 +1816,9 @@ const UserAssociations = ({ userId: initialUserId }) => {
                                 render: (text, record) => {
                                   const highlighted =
                                     record.matched ||
-                                    (assoc.matched_dimensions || []).includes(
-                                      record.dimension,
-                                    );
+                                    (
+                                      effectiveAssoc.matched_dimensions || []
+                                    ).includes(record.dimension);
                                   return (
                                     <div className='flex items-center gap-1'>
                                       <Text strong>{text}</Text>
@@ -1755,9 +1892,13 @@ const UserAssociations = ({ userId: initialUserId }) => {
                                 },
                               },
                             ]}
-                            dataSource={[...(assoc.details || [])].sort(
-                              (a, b) => (b.weight || 0) - (a.weight || 0),
-                            )}
+                            dataSource={
+                              assocDetail
+                                ? [...(assocDetail.details || [])].sort(
+                                    (a, b) => (b.weight || 0) - (a.weight || 0),
+                                  )
+                                : []
+                            }
                             pagination={false}
                             size='small'
                             rowKey='dimension'

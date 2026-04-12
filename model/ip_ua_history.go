@@ -1,9 +1,14 @@
 package model
 
 import (
+	"errors"
+	"fmt"
+	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
 )
 
 // IPUAHistory IP/UA 使用历史
@@ -43,10 +48,160 @@ func (IPUAHistory) TableName() string {
 	return "ip_ua_history"
 }
 
+var (
+	ipuaWriteGateMu      sync.Mutex
+	ipuaLastWriteByKey   = make(map[string]time.Time)
+	ipuaReservedByKey    = make(map[string]time.Time)
+	ipuaWriteGateSweeps  int64
+)
+
+func shouldSampleIPUAWrite() bool {
+	sampleRate := common.GetFingerprintIPUAWriteSampleRate()
+	if sampleRate >= 100 {
+		return true
+	}
+	if sampleRate <= 1 {
+		return rand.Intn(100) == 0
+	}
+	return rand.Intn(100) < sampleRate
+}
+
+func buildIPUAWriteGateKey(record *IPUAHistory) string {
+	if record == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d|%s|%s|%s", record.UserID, record.IPAddress, record.UABrowser, record.UAOS)
+}
+
+func reserveIPUAWriteSlot(key string, now time.Time) bool {
+	if key == "" {
+		return true
+	}
+	minIntervalSeconds := common.GetFingerprintIPUAWriteMinIntervalSeconds()
+	if minIntervalSeconds <= 0 {
+		return true
+	}
+	interval := time.Duration(minIntervalSeconds) * time.Second
+
+	ipuaWriteGateMu.Lock()
+	defer ipuaWriteGateMu.Unlock()
+
+	if reservedAt, exists := ipuaReservedByKey[key]; exists {
+		if now.Sub(reservedAt) < interval {
+			return false
+		}
+	}
+	if lastWriteAt, exists := ipuaLastWriteByKey[key]; exists {
+		if now.Sub(lastWriteAt) < interval {
+			return false
+		}
+	}
+
+	ipuaReservedByKey[key] = now
+	return true
+}
+
+func completeIPUAWriteSlot(key string, now time.Time, success bool) {
+	if key == "" {
+		return
+	}
+	minIntervalSeconds := common.GetFingerprintIPUAWriteMinIntervalSeconds()
+	if minIntervalSeconds <= 0 {
+		return
+	}
+	interval := time.Duration(minIntervalSeconds) * time.Second
+
+	ipuaWriteGateMu.Lock()
+	defer ipuaWriteGateMu.Unlock()
+
+	delete(ipuaReservedByKey, key)
+	if success {
+		ipuaLastWriteByKey[key] = now
+	}
+	ipuaWriteGateSweeps++
+	if ipuaWriteGateSweeps%256 != 0 {
+		return
+	}
+
+	expiredBefore := now.Add(-3 * interval)
+	for gateKey, gateTime := range ipuaLastWriteByKey {
+		if gateTime.Before(expiredBefore) {
+			delete(ipuaLastWriteByKey, gateKey)
+		}
+	}
+	for gateKey, gateTime := range ipuaReservedByKey {
+		if gateTime.Before(expiredBefore) {
+			delete(ipuaReservedByKey, gateKey)
+		}
+	}
+}
+
+func trimIPUAHistoryByUser(userID int) error {
+	if userID <= 0 {
+		return nil
+	}
+	limit := common.GetFingerprintIPUAUserHistoryLimit()
+	cleanupBatch := common.GetFingerprintIPUAUserHistoryCleanupBatch()
+	if cleanupBatch > limit {
+		cleanupBatch = limit
+	}
+
+	var count int64
+	if err := DB.Model(&IPUAHistory{}).Where("user_id = ?", userID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count <= int64(limit) {
+		return nil
+	}
+
+	toDelete := int(count) - limit
+	if toDelete > cleanupBatch {
+		toDelete = cleanupBatch
+	}
+	if toDelete <= 0 {
+		return nil
+	}
+
+	staleIDs := make([]int64, 0, toDelete)
+	if err := DB.Model(&IPUAHistory{}).
+		Where("user_id = ?", userID).
+		Order("last_seen ASC, id ASC").
+		Limit(toDelete).
+		Pluck("id", &staleIDs).Error; err != nil {
+		return err
+	}
+	if len(staleIDs) == 0 {
+		return nil
+	}
+	return DB.Where("id IN ?", staleIDs).Delete(&IPUAHistory{}).Error
+}
+
+func DeleteOldIPUAHistory(before time.Time) (int64, error) {
+	result := DB.Where("last_seen < ?", before).Delete(&IPUAHistory{})
+	return result.RowsAffected, result.Error
+}
+
 // UpsertIPUAHistory 插入或更新 IP/UA 历史记录
 func UpsertIPUAHistory(record *IPUAHistory) error {
+	if record == nil || record.UserID <= 0 || record.IPAddress == "" {
+		return nil
+	}
+	now := time.Now()
+	if !shouldSampleIPUAWrite() {
+		return nil
+	}
+	gateKey := buildIPUAWriteGateKey(record)
+	if !reserveIPUAWriteSlot(gateKey, now) {
+		return nil
+	}
+	var err error
+	defer func() {
+		if err != nil {
+			completeIPUAWriteSlot(gateKey, now, false)
+		}
+	}()
 	if common.UsingPostgreSQL {
-		return DB.Exec(`
+		err = DB.Exec(`
 			INSERT INTO ip_ua_history
 				(user_id, ip_address, user_agent, ip_country, ip_region, ip_city, ip_isp, ip_type, asn, asn_org, is_datacenter, ip_risk_score,
 				 ua_browser, ua_browser_ver, ua_os, ua_os_ver, ua_device, endpoint, request_count, first_seen, last_seen)
@@ -60,7 +215,11 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 				ip_type = COALESCE(NULLIF(EXCLUDED.ip_type, ''), ip_ua_history.ip_type),
 				asn = CASE WHEN EXCLUDED.asn > 0 THEN EXCLUDED.asn ELSE ip_ua_history.asn END,
 				asn_org = COALESCE(NULLIF(EXCLUDED.asn_org, ''), ip_ua_history.asn_org),
-				is_datacenter = EXCLUDED.is_datacenter,
+				is_datacenter = CASE
+					WHEN EXCLUDED.asn > 0 OR NULLIF(EXCLUDED.asn_org, '') IS NOT NULL OR EXCLUDED.is_datacenter
+					THEN EXCLUDED.is_datacenter
+					ELSE ip_ua_history.is_datacenter
+				END,
 				ip_risk_score = CASE WHEN EXCLUDED.ip_risk_score > 0 THEN EXCLUDED.ip_risk_score ELSE ip_ua_history.ip_risk_score END
 		`,
 			record.UserID, record.IPAddress, record.UserAgent,
@@ -68,51 +227,58 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 			record.UABrowser, record.UABrowserVer, record.UAOS, record.UAOSVer, record.UADevice,
 			record.Endpoint,
 		).Error
-	}
+	} else {
+		// MySQL/SQLite: 先查后更新
+		var existing IPUAHistory
+		result := DB.Where("user_id = ? AND ip_address = ? AND ua_browser = ? AND ua_os = ?",
+			record.UserID, record.IPAddress, record.UABrowser, record.UAOS).First(&existing)
 
-	// MySQL/SQLite: 先查后更新
-	var existing IPUAHistory
-	result := DB.Where("user_id = ? AND ip_address = ? AND ua_browser = ? AND ua_os = ?",
-		record.UserID, record.IPAddress, record.UABrowser, record.UAOS).First(&existing)
+		if result.Error != nil {
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				err = DB.Create(record).Error
+			} else {
+				err = result.Error
+			}
+		} else {
+			ipType := existing.IPType
+			if record.IPType != "" {
+				ipType = record.IPType
+			}
+			asn := existing.ASN
+			if record.ASN > 0 {
+				asn = record.ASN
+			}
+			asnOrg := existing.ASNOrg
+			if record.ASNOrg != "" {
+				asnOrg = record.ASNOrg
+			}
+			isDatacenter := existing.IsDatacenter
+			if record.ASN > 0 || record.ASNOrg != "" || record.IsDatacenter {
+				isDatacenter = record.IsDatacenter
+			}
+			ipRiskScore := existing.IPRiskScore
+			if record.IPRiskScore > 0 {
+				ipRiskScore = record.IPRiskScore
+			}
 
-	if result.Error != nil {
-		// 不存在，创建
-		return DB.Create(record).Error
+			err = DB.Model(&existing).Updates(map[string]any{
+				"request_count": existing.RequestCount + 1,
+				"last_seen":     now,
+				"user_agent":    record.UserAgent,
+				"endpoint":      record.Endpoint,
+				"ip_type":       ipType,
+				"asn":           asn,
+				"asn_org":       asnOrg,
+				"is_datacenter": isDatacenter,
+				"ip_risk_score": ipRiskScore,
+			}).Error
+		}
 	}
-
-	ipType := existing.IPType
-	if record.IPType != "" {
-		ipType = record.IPType
+	if err != nil {
+		return err
 	}
-	asn := existing.ASN
-	if record.ASN > 0 {
-		asn = record.ASN
-	}
-	asnOrg := existing.ASNOrg
-	if record.ASNOrg != "" {
-		asnOrg = record.ASNOrg
-	}
-	isDatacenter := existing.IsDatacenter
-	if record.ASN > 0 || record.ASNOrg != "" || record.IsDatacenter {
-		isDatacenter = record.IsDatacenter
-	}
-	ipRiskScore := existing.IPRiskScore
-	if record.IPRiskScore > 0 {
-		ipRiskScore = record.IPRiskScore
-	}
-
-	// 存在，更新
-	return DB.Model(&existing).Updates(map[string]interface{}{
-		"request_count": existing.RequestCount + 1,
-		"last_seen":     time.Now(),
-		"user_agent":    record.UserAgent,
-		"endpoint":      record.Endpoint,
-		"ip_type":       ipType,
-		"asn":           asn,
-		"asn_org":       asnOrg,
-		"is_datacenter": isDatacenter,
-		"ip_risk_score": ipRiskScore,
-	}).Error
+	completeIPUAWriteSlot(gateKey, now, true)
+	return trimIPUAHistoryByUser(record.UserID)
 }
 
 // FindUsersByIP 根据IP查找用户

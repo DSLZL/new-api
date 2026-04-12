@@ -432,6 +432,165 @@ func TestFingerprintConfig_GetWeightsPrefersOptionMap(t *testing.T) {
 	}
 }
 
+func TestFingerprintConfig_ReadsIPUAWriteOptimizationConfig(t *testing.T) {
+	oldSampleRate := os.Getenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE")
+	oldHistoryLimit := os.Getenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT")
+	oldCleanupBatch := os.Getenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH")
+	oldMinInterval := os.Getenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS")
+	oldIPUARetention := os.Getenv("FINGERPRINT_IPUA_RETENTION_DAYS")
+	oldSessionRetention := os.Getenv("FINGERPRINT_SESSION_RETENTION_DAYS")
+	oldMaxUserAgentLength := os.Getenv("FINGERPRINT_MAX_USER_AGENT_LENGTH")
+	oldMaxFontsListLength := os.Getenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH")
+	oldMaxWebRTCIPsLength := os.Getenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH")
+	oldMaxPageURLLength := os.Getenv("FINGERPRINT_MAX_PAGE_URL_LENGTH")
+	oldRetention := os.Getenv("FINGERPRINT_RETENTION_DAYS")
+	t.Cleanup(func() {
+		if oldSampleRate == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", oldSampleRate)
+		}
+		if oldHistoryLimit == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", oldHistoryLimit)
+		}
+		if oldCleanupBatch == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", oldCleanupBatch)
+		}
+		if oldMinInterval == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", oldMinInterval)
+		}
+		if oldIPUARetention == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_RETENTION_DAYS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_RETENTION_DAYS", oldIPUARetention)
+		}
+		if oldSessionRetention == "" {
+			_ = os.Unsetenv("FINGERPRINT_SESSION_RETENTION_DAYS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_SESSION_RETENTION_DAYS", oldSessionRetention)
+		}
+		if oldMaxUserAgentLength == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_USER_AGENT_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", oldMaxUserAgentLength)
+		}
+		if oldMaxFontsListLength == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", oldMaxFontsListLength)
+		}
+		if oldMaxWebRTCIPsLength == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", oldMaxWebRTCIPsLength)
+		}
+		if oldMaxPageURLLength == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_PAGE_URL_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", oldMaxPageURLLength)
+		}
+		if oldRetention == "" {
+			_ = os.Unsetenv("FINGERPRINT_RETENTION_DAYS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_RETENTION_DAYS", oldRetention)
+		}
+	})
+
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", "37")
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", "300")
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", "60")
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", "120")
+	_ = os.Setenv("FINGERPRINT_IPUA_RETENTION_DAYS", "21")
+	_ = os.Setenv("FINGERPRINT_SESSION_RETENTION_DAYS", "14")
+	_ = os.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", "128")
+	_ = os.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", "256")
+	_ = os.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "80")
+	_ = os.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", "120")
+	_ = os.Setenv("FINGERPRINT_RETENTION_DAYS", "90")
+
+	if got := GetFingerprintIPUAWriteSampleRate(); got != 37 {
+		t.Fatalf("expected ipua sample rate 37, got %v", got)
+	}
+	if got := GetFingerprintIPUAUserHistoryLimit(); got != 300 {
+		t.Fatalf("expected ipua history limit 300, got %v", got)
+	}
+	if got := GetFingerprintIPUAUserHistoryCleanupBatch(); got != 60 {
+		t.Fatalf("expected ipua cleanup batch 60, got %v", got)
+	}
+	if got := GetFingerprintIPUAWriteMinIntervalSeconds(); got != 120 {
+		t.Fatalf("expected ipua min interval 120, got %v", got)
+	}
+	if got := GetFingerprintIPUARetentionDays(); got != 21 {
+		t.Fatalf("expected ipua retention days 21, got %v", got)
+	}
+	if got := GetFingerprintSessionRetentionDays(); got != 14 {
+		t.Fatalf("expected session retention days 14, got %v", got)
+	}
+	if got := GetFingerprintMaxUserAgentLength(); got != 128 {
+		t.Fatalf("expected max user agent length 128, got %v", got)
+	}
+	if got := GetFingerprintMaxFontsListLength(); got != 256 {
+		t.Fatalf("expected max fonts list length 256, got %v", got)
+	}
+	if got := GetFingerprintMaxWebRTCIPsLength(); got != 80 {
+		t.Fatalf("expected max webrtc ips length 80, got %v", got)
+	}
+	if got := GetFingerprintMaxPageURLLength(); got != 120 {
+		t.Fatalf("expected max page_url length 120, got %v", got)
+	}
+
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", "0")
+	if got := GetFingerprintIPUAWriteSampleRate(); got != 1 {
+		t.Fatalf("expected ipua sample rate lower bound 1, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", "999")
+	if got := GetFingerprintIPUAWriteSampleRate(); got != 100 {
+		t.Fatalf("expected ipua sample rate upper bound 100, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", "bad")
+	if got := GetFingerprintIPUAUserHistoryLimit(); got != 200 {
+		t.Fatalf("expected ipua history limit fallback 200, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", "bad")
+	if got := GetFingerprintIPUAUserHistoryCleanupBatch(); got != 50 {
+		t.Fatalf("expected ipua cleanup batch fallback 50, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", "bad")
+	if got := GetFingerprintIPUAWriteMinIntervalSeconds(); got != 300 {
+		t.Fatalf("expected ipua min interval fallback 300, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_IPUA_RETENTION_DAYS", "bad")
+	if got := GetFingerprintIPUARetentionDays(); got != 90 {
+		t.Fatalf("expected ipua retention fallback to retention days 90, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_SESSION_RETENTION_DAYS", "bad")
+	if got := GetFingerprintSessionRetentionDays(); got != 90 {
+		t.Fatalf("expected session retention fallback to retention days 90, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", "bad")
+	if got := GetFingerprintMaxUserAgentLength(); got != 512 {
+		t.Fatalf("expected max user agent length fallback 512, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", "bad")
+	if got := GetFingerprintMaxFontsListLength(); got != 1024 {
+		t.Fatalf("expected max fonts list length fallback 1024, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "bad")
+	if got := GetFingerprintMaxWebRTCIPsLength(); got != 256 {
+		t.Fatalf("expected max webrtc ips length fallback 256, got %v", got)
+	}
+	_ = os.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", "bad")
+	if got := GetFingerprintMaxPageURLLength(); got != 256 {
+		t.Fatalf("expected max page_url length fallback 256, got %v", got)
+	}
+}
+
 func TestFingerprintConfig_ReadsBehaviorConfig(t *testing.T) {
 	oldWeightKeystroke := os.Getenv("FINGERPRINT_WEIGHT_KEYSTROKE")
 	oldWeightMouse := os.Getenv("FINGERPRINT_WEIGHT_MOUSE")

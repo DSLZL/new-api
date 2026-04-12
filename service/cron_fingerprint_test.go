@@ -211,6 +211,121 @@ func TestCleanOldBehaviorProfiles_UsesBehaviorRetentionDays(t *testing.T) {
 	assert.NotNil(t, model.GetLatestMouseProfile(9202))
 }
 
+func TestUpsertIPUAHistory_ThrottlesAndTrimsByUserLimit(t *testing.T) {
+	initTestDB(t)
+
+	oldSampleRate := os.Getenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE")
+	oldMinInterval := os.Getenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS")
+	oldLimit := os.Getenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT")
+	oldBatch := os.Getenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH")
+	t.Cleanup(func() {
+		if oldSampleRate == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", oldSampleRate)
+		}
+		if oldMinInterval == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", oldMinInterval)
+		}
+		if oldLimit == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", oldLimit)
+		}
+		if oldBatch == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", oldBatch)
+		}
+	})
+
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_SAMPLE_RATE", "100")
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", "3600")
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_LIMIT", "2")
+	_ = os.Setenv("FINGERPRINT_IPUA_USER_HISTORY_CLEANUP_BATCH", "1")
+
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{
+		UserID:    9301,
+		IPAddress: "10.0.0.1",
+		UABrowser: "Chrome",
+		UAOS:      "Windows",
+		UserAgent: "ua-1",
+		Endpoint:  "/api/test",
+	}))
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{
+		UserID:    9301,
+		IPAddress: "10.0.0.1",
+		UABrowser: "Chrome",
+		UAOS:      "Windows",
+		UserAgent: "ua-1",
+		Endpoint:  "/api/test",
+	}))
+
+	var throttled model.IPUAHistory
+	require.NoError(t, model.DB.Where("user_id = ? AND ip_address = ?", 9301, "10.0.0.1").First(&throttled).Error)
+	assert.Equal(t, 1, throttled.RequestCount)
+
+	_ = os.Setenv("FINGERPRINT_IPUA_WRITE_MIN_INTERVAL_SECONDS", "1")
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{UserID: 9302, IPAddress: "10.0.0.1", UABrowser: "Chrome", UAOS: "Windows", UserAgent: "ua-a", Endpoint: "/api/test"}))
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{UserID: 9302, IPAddress: "10.0.0.2", UABrowser: "Chrome", UAOS: "Windows", UserAgent: "ua-b", Endpoint: "/api/test"}))
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{UserID: 9302, IPAddress: "10.0.0.3", UABrowser: "Chrome", UAOS: "Windows", UserAgent: "ua-c", Endpoint: "/api/test"}))
+	require.NoError(t, model.UpsertIPUAHistory(&model.IPUAHistory{UserID: 9302, IPAddress: "10.0.0.4", UABrowser: "Chrome", UAOS: "Windows", UserAgent: "ua-d", Endpoint: "/api/test"}))
+
+	var trimmedCount int64
+	require.NoError(t, model.DB.Model(&model.IPUAHistory{}).Where("user_id = ?", 9302).Count(&trimmedCount).Error)
+	assert.Equal(t, int64(2), trimmedCount)
+}
+
+func TestFullLinkScan_CleansOldIPUAHistoryUsingRetentionDays(t *testing.T) {
+	initTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
+	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+
+	now := time.Now().UTC()
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 9401, IPAddress: "1.1.1.1", UABrowser: "Chrome", UAOS: "Windows", LastSeen: now.Add(-10 * 24 * time.Hour)}).Error)
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 9402, IPAddress: "2.2.2.2", UABrowser: "Chrome", UAOS: "Windows", LastSeen: now.Add(-2 * 24 * time.Hour)}).Error)
+	require.NoError(t, model.DB.Create(&model.UserSession{UserID: 9411, SessionID: "sess-old", Source: "fingerprint", StartedAt: now.Add(-10 * 24 * time.Hour), EndedAt: now.Add(-10 * 24 * time.Hour)}).Error)
+	require.NoError(t, model.DB.Create(&model.UserSession{UserID: 9412, SessionID: "sess-fresh", Source: "fingerprint", StartedAt: now.Add(-2 * 24 * time.Hour), EndedAt: now.Add(-2 * 24 * time.Hour)}).Error)
+
+	oldEnabled := common.FingerprintEnabled
+	oldIPUARetention := os.Getenv("FINGERPRINT_IPUA_RETENTION_DAYS")
+	oldSessionRetention := os.Getenv("FINGERPRINT_SESSION_RETENTION_DAYS")
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		if oldIPUARetention == "" {
+			_ = os.Unsetenv("FINGERPRINT_IPUA_RETENTION_DAYS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_IPUA_RETENTION_DAYS", oldIPUARetention)
+		}
+		if oldSessionRetention == "" {
+			_ = os.Unsetenv("FINGERPRINT_SESSION_RETENTION_DAYS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_SESSION_RETENTION_DAYS", oldSessionRetention)
+		}
+	})
+	common.FingerprintEnabled = true
+	_ = os.Setenv("FINGERPRINT_IPUA_RETENTION_DAYS", "5")
+	_ = os.Setenv("FINGERPRINT_SESSION_RETENTION_DAYS", "5")
+
+	FullLinkScan()
+
+	var staleCount int64
+	var freshCount int64
+	require.NoError(t, model.DB.Model(&model.IPUAHistory{}).Where("user_id = ?", 9401).Count(&staleCount).Error)
+	require.NoError(t, model.DB.Model(&model.IPUAHistory{}).Where("user_id = ?", 9402).Count(&freshCount).Error)
+	assert.Equal(t, int64(0), staleCount)
+	assert.Equal(t, int64(1), freshCount)
+
+	var staleSessionCount int64
+	var freshSessionCount int64
+	require.NoError(t, model.DB.Model(&model.UserSession{}).Where("user_id = ?", 9411).Count(&staleSessionCount).Error)
+	require.NoError(t, model.DB.Model(&model.UserSession{}).Where("user_id = ?", 9412).Count(&freshSessionCount).Error)
+	assert.Equal(t, int64(0), staleSessionCount)
+	assert.Equal(t, int64(1), freshSessionCount)
+}
+
 func TestCheckAndUpdateASNData_NoOpAndSafe(t *testing.T) {
 	oldASNEnabled := common.FingerprintEnableASNAnalysis
 	oldPath := os.Getenv("FINGERPRINT_ASN_DB_PATH")

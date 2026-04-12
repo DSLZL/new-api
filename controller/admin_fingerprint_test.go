@@ -302,7 +302,7 @@ func TestFPGetUserFingerprints_ReturnsPlanFieldsAndTopLevelBehaviorSummary(t *te
 	initAdminFingerprintTestDB(t)
 
 	const userID = 321
-	require.NoError(t, model.DB.Create(&model.Fingerprint{
+	require.NoError(t, (&model.Fingerprint{
 		UserID:                userID,
 		IPAddress:             "1.1.1.1",
 		JA4:                   "ja4-plan",
@@ -315,7 +315,7 @@ func TestFPGetUserFingerprints_ReturnsPlanFieldsAndTopLevelBehaviorSummary(t *te
 		MediaDeviceTotal:      5,
 		SpeechVoiceCount:      12,
 		SpeechLocalVoiceCount: 4,
-	}).Error)
+	}).Insert())
 	require.NoError(t, model.UpsertBehaviorProfilesAtomic(
 		&model.KeystrokeProfile{UserID: userID, TypingSpeed: 87.5, SampleCount: 21},
 		&model.MouseProfile{UserID: userID, AvgSpeed: 144.2, SampleCount: 34},
@@ -340,8 +340,8 @@ func TestFPGetUserFingerprints_ReturnsPlanFieldsAndTopLevelBehaviorSummary(t *te
 	require.Len(t, payload.Data, 1)
 	require.Equal(t, "ja4-plan", payload.Data[0]["ja4"])
 	require.Equal(t, "hdr-plan", payload.Data[0]["http_header_hash"])
-	require.Equal(t, ` ["8.8.8.8"] `, payload.Data[0]["webrtc_public_ips"])
-	require.Equal(t, ` ["192.168.1.9"] `, payload.Data[0]["webrtc_local_ips"])
+	require.Equal(t, `["8.8.8.8"]`, payload.Data[0]["webrtc_public_ips"])
+	require.Equal(t, `["192.168.1.9"]`, payload.Data[0]["webrtc_local_ips"])
 	require.Equal(t, "NVIDIA RTX", payload.Data[0]["webgl_renderer"])
 	require.Equal(t, "NVIDIA", payload.Data[0]["webgl_vendor"])
 	require.EqualValues(t, 12, payload.Data[0]["speech_voice_count"])

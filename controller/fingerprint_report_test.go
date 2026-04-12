@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -921,6 +922,71 @@ func TestReportFingerprint_RejectsTooLongSessionID(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Len(t, model.GetLatestFingerprints(37, 1), 0)
 	require.Len(t, model.GetLatestUserSessions(37, 10), 0)
+}
+
+func TestReportFingerprint_TrimsStorageHeavyFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	initFingerprintReportTestDB(t)
+
+	oldEnabled := common.FingerprintEnabled
+	oldRedis := common.RedisEnabled
+	oldMaxUA := os.Getenv("FINGERPRINT_MAX_USER_AGENT_LENGTH")
+	oldMaxFonts := os.Getenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH")
+	oldMaxWebRTC := os.Getenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH")
+	oldMaxPageURL := os.Getenv("FINGERPRINT_MAX_PAGE_URL_LENGTH")
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		common.RedisEnabled = oldRedis
+		if oldMaxUA == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_USER_AGENT_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", oldMaxUA)
+		}
+		if oldMaxFonts == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", oldMaxFonts)
+		}
+		if oldMaxWebRTC == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", oldMaxWebRTC)
+		}
+		if oldMaxPageURL == "" {
+			_ = os.Unsetenv("FINGERPRINT_MAX_PAGE_URL_LENGTH")
+		} else {
+			_ = os.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", oldMaxPageURL)
+		}
+	})
+
+	common.FingerprintEnabled = true
+	common.RedisEnabled = false
+	_ = os.Setenv("FINGERPRINT_MAX_USER_AGENT_LENGTH", "12")
+	_ = os.Setenv("FINGERPRINT_MAX_FONTS_LIST_LENGTH", "10")
+	_ = os.Setenv("FINGERPRINT_MAX_WEBRTC_IPS_LENGTH", "12")
+	_ = os.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", "18")
+
+	longUA := strings.Repeat("U", 30)
+	longFonts := strings.Repeat("F", 40)
+	body := fmt.Sprintf(`{"canvas_hash":"canvas-trim","webgl_hash":"webgl-trim","audio_hash":"audio-trim","composite_hash":"comp-trim","fonts_list":"%s","webrtc_local_ips":["192.168.1.2"],"webrtc_public_ips":["8.8.8.8"],"session_id":"trim-session"}`,
+		longFonts,
+	)
+	ctx, recorder := newFingerprintReportTestContext(http.MethodPost, "/api/fingerprint/report", body)
+	ctx.Set("id", 381)
+	ctx.Set("real_ip", "1.2.3.4")
+	ctx.Request.Header.Set("User-Agent", longUA)
+	ctx.Request.Header.Set("Referer", "https://example.com/path/that/is/very/long?token=secret")
+
+	ReportFingerprint(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	fps := model.GetLatestFingerprints(381, 1)
+	require.Len(t, fps, 1)
+	require.Equal(t, 12, len([]rune(fps[0].UserAgent)))
+	require.Equal(t, 10, len([]rune(fps[0].FontsList)))
+	require.Equal(t, "[]", fps[0].WebRTCLocalIPs)
+	require.Equal(t, `["8.8.8.8"]`, fps[0].WebRTCPublicIPs)
+	require.Equal(t, 18, len([]rune(fps[0].PageURL)))
 }
 
 func TestFPGetUserTemporalProfile_RealtimeReturnsZeroComputedAtWhenNoSamples(t *testing.T) {

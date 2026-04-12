@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -100,13 +102,62 @@ func (Fingerprint) TableName() string {
 	return "user_fingerprints"
 }
 
+func trimFingerprintText(raw string, maxLen int) string {
+	trimmed := strings.TrimSpace(raw)
+	if maxLen <= 0 || trimmed == "" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= maxLen {
+		return trimmed
+	}
+	return string(runes[:maxLen])
+}
+
+func normalizeWebRTCIPList(raw string, maxLen int) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if maxLen <= 0 {
+		return "[]"
+	}
+
+	var ips []string
+	if err := common.UnmarshalJsonStr(trimmed, &ips); err != nil {
+		return "[]"
+	}
+	payload, err := common.Marshal(ips)
+	if err != nil {
+		return "[]"
+	}
+	canonical := string(payload)
+	if len([]rune(canonical)) > maxLen {
+		return "[]"
+	}
+	return canonical
+}
+
+func normalizeFingerprintForStorage(fp *Fingerprint) {
+	if fp == nil {
+		return
+	}
+	fp.UserAgent = trimFingerprintText(fp.UserAgent, common.GetFingerprintMaxUserAgentLength())
+	fp.FontsList = trimFingerprintText(fp.FontsList, common.GetFingerprintMaxFontsListLength())
+	fp.WebRTCLocalIPs = normalizeWebRTCIPList(fp.WebRTCLocalIPs, common.GetFingerprintMaxWebRTCIPsLength())
+	fp.WebRTCPublicIPs = normalizeWebRTCIPList(fp.WebRTCPublicIPs, common.GetFingerprintMaxWebRTCIPsLength())
+	fp.PageURL = trimFingerprintText(fp.PageURL, common.GetFingerprintMaxPageURLLength())
+}
+
 // ─── 写入方法 ───
 
 func (fp *Fingerprint) Insert() error {
+	normalizeFingerprintForStorage(fp)
 	return DB.Create(fp).Error
 }
 
 func insertFingerprintWithDB(db *gorm.DB, fp *Fingerprint) error {
+	normalizeFingerprintForStorage(fp)
 	return db.Create(fp).Error
 }
 
@@ -628,6 +679,7 @@ func GetDeviceProfilesAsFingerprints(userID int) []*Fingerprint {
 	result := make([]*Fingerprint, 0, len(profiles))
 	for _, p := range profiles {
 		result = append(result, &Fingerprint{
+			ID:                    p.ID,
 			UserID:                p.UserID,
 			CanvasHash:            p.CanvasHash,
 			WebGLHash:             p.WebGLHash,
@@ -668,6 +720,7 @@ func GetDeviceProfileByID(id int64) *UserDeviceProfile {
 // 供关联分析时作为比对基准使用
 func DeviceProfileToFingerprint(p *UserDeviceProfile) *Fingerprint {
 	return &Fingerprint{
+		ID:                    p.ID,
 		UserID:                p.UserID,
 		CanvasHash:            p.CanvasHash,
 		WebGLHash:             p.WebGLHash,

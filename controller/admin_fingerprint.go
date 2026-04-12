@@ -157,6 +157,9 @@ func FPGetUserAssociations(c *gin.Context) {
 	minConf, _ := strconv.ParseFloat(c.DefaultQuery("min_confidence", "0.3"), 64)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	refresh := c.DefaultQuery("refresh", "false") == "true"
+	includeDetails := c.DefaultQuery("include_details", "false") == "true"
+	includeSharedIPs := c.DefaultQuery("include_shared_ips", "false") == "true"
+	candidateUserID, _ := strconv.Atoi(c.DefaultQuery("candidate_user_id", "0"))
 
 	if limit < 1 || limit > 100 {
 		limit = 20
@@ -207,7 +210,11 @@ func FPGetUserAssociations(c *gin.Context) {
 	// ★ 改动 3: 传 *model.Fingerprint 而非 int64 fpID
 	//           service.QueryUserAssociations 签名需同步修改（见下方说明）
 	// ──────────────────────────────────────────────────────────
-	result, err := service.QueryUserAssociations(targetUserID, minConf, limit, refresh, baseFingerprint)
+	result, err := service.QueryUserAssociationsWithOptions(targetUserID, minConf, limit, refresh, baseFingerprint, &service.AssociationQueryOptions{
+		IncludeDetails:   includeDetails,
+		IncludeSharedIPs: includeSharedIPs,
+		CandidateUserID:  candidateUserID,
+	})
 	if err != nil {
 		// 区分"无数据"与"真正的服务器错误"
 		c.JSON(http.StatusOK, gin.H{
