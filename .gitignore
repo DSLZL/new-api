@@ -34,3 +34,10 @@ data/
 .gocache-temp
 .gopath
 .worktrees/
+PLAN.md
+.serena/.gitignore
+.serena/project.yml
+tests/fingerprint/_generate_tokens_env.py
+tests/fingerprint/__pycache__/test_runner.cpython-314.pyc
+web/.serena/.gitignore
+web/.serena/project.yml
