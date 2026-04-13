@@ -140,17 +140,20 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 
 		// 从response.Body读取更多的数据直到达到当前的限制
 		additionalData := make([]byte, limit-int64(len(readData)))
-		n, _ := io.ReadFull(response.Body, additionalData)
+		n, readErr := io.ReadFull(response.Body, additionalData)
 		readData = append(readData, additionalData[:n]...)
-
-		// 使用io.MultiReader组合已经读取的数据和response.Body
-		limitReader := io.MultiReader(bytes.NewReader(readData), response.Body)
 
 		var config image.Config
 		var format string
-		config, format, err = getImageConfig(limitReader)
+		config, format, err = getImageConfig(bytes.NewReader(readData))
 		if err == nil {
 			return config, format, nil
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				break
+			}
+			return image.Config{}, "", fmt.Errorf("failed to read image data: %w", readErr)
 		}
 	}
 
@@ -158,20 +161,36 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 }
 
 func getImageConfig(reader io.Reader) (image.Config, string, error) {
+	// Read all data so we can retry with different decoders
+	data, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		return image.Config{}, "", fmt.Errorf("failed to read image data: %w", readErr)
+	}
+
 	// 读取图片的头部信息来获取图片尺寸
-	config, format, err := image.DecodeConfig(reader)
-	if err != nil {
-		err = fmt.Errorf("fail to decode image config(gif, jpg, png): %w", err)
-		common.SysLog(err.Error())
-		config, err = webp.DecodeConfig(reader)
-		if err != nil {
-			err = fmt.Errorf("fail to decode image config(webp): %w", err)
-			common.SysLog(err.Error())
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err == nil {
+		return config, format, nil
+	}
+	common.SysLog(fmt.Sprintf("fail to decode image config(gif, jpg, png): %s", err.Error()))
+
+	config, err = webp.DecodeConfig(bytes.NewReader(data))
+	if err == nil {
+		return config, "webp", nil
+	}
+	common.SysLog(fmt.Sprintf("fail to decode image config(webp): %s", err.Error()))
+
+	// Try HEIF/HEIC: parse ISOBMFF ispe box for dimensions
+	if heifMime := detectHEIF(data); heifMime != "" {
+		formatName := "heif"
+		if heifMime == "image/heic" {
+			formatName = "heic"
 		}
-		format = "webp"
+		if w, h, ok := parseHEIFDimensions(data); ok {
+			return image.Config{Width: w, Height: h}, formatName, nil
+		}
+		return image.Config{}, "", fmt.Errorf("failed to decode HEIF/HEIC image dimensions")
 	}
-	if err != nil {
-		return image.Config{}, "", err
-	}
-	return config, format, nil
+
+	return image.Config{}, "", err
 }

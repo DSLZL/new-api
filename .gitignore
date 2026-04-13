@@ -23,14 +23,10 @@ web/bun.lock
 plans
 .claude
 .spec-workflow
-# gitignore handled
-=======
->>>>>>> c3a4d1935512f4daa8da05f8dd99e020be1e9b90
 
 electron/node_modules
 electron/dist
 data/
-.gomodcache/
 .gocache-temp
 .gopath
 .worktrees/
@@ -41,3 +37,4 @@ tests/fingerprint/_generate_tokens_env.py
 tests/fingerprint/__pycache__/test_runner.cpython-314.pyc
 web/.serena/.gitignore
 web/.serena/project.yml
+token_estimator_test.go
