@@ -29,3 +29,5 @@ data/
 .gomodcache/
 .gocache-temp
 .gopath
+.spec-workflow/
+1.md
