@@ -472,7 +472,9 @@ func RefreshTemporalProfilesCron(limit int) {
 	}
 	defer atomic.StoreInt32(&temporalRefreshRunning, 0)
 
-	userIDs := model.GetAllUserIDsWithFingerprints()
+	maxUsers := common.GetFingerprintTemporalRefreshMaxUsers()
+	activeWindowHours := common.GetFingerprintActiveUserWindowHours()
+	userIDs := model.GetActiveUserIDsWithFingerprints(activeWindowHours, maxUsers)
 	for _, userID := range userIDs {
 		if err := RefreshTemporalProfileForUser(userID, limit); err != nil {
 			common.SysLog(fmt.Sprintf("refresh temporal profile failed: user=%d err=%v", userID, err))

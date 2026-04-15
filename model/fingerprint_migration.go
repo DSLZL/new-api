@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -17,6 +18,10 @@ func RunFingerprintMigration() {
 
 	if err := migrateFingerprintETagColumn(DB); err != nil {
 		common.SysError("fingerprint etag column migration failed: " + err.Error())
+		return
+	}
+	if err := ensureFingerprintRequiredColumns(DB); err != nil {
+		common.SysError("fingerprint required columns migration failed: " + err.Error())
 		return
 	}
 
@@ -146,6 +151,43 @@ func migrateFingerprintETagColumn(db *gorm.DB) error {
 		return db.Migrator().RenameColumn(&Fingerprint{}, "e_tag_id", "etag_id")
 	}
 	return db.Exec(`UPDATE user_fingerprints SET etag_id = e_tag_id WHERE (etag_id = '' OR etag_id IS NULL) AND e_tag_id != ''`).Error
+}
+
+func ensureFingerprintRequiredColumns(db *gorm.DB) error {
+	if db == nil {
+		db = DB
+	}
+	if db == nil {
+		return nil
+	}
+
+	if err := ensureColumnIfMissing(db, &Fingerprint{}, "user_fingerprints", "webgl_deep_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumnIfMissing(db, &UserRiskScore{}, "user_risk_scores", "ua_os_consistency", "REAL NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName string, sqliteDDL string) error {
+	if db == nil || model == nil || tableName == "" || columnName == "" {
+		return nil
+	}
+	if !db.Migrator().HasTable(model) {
+		return nil
+	}
+	if db.Migrator().HasColumn(model, columnName) {
+		return nil
+	}
+	if common.UsingSQLite {
+		sql := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s", tableName, columnName, sqliteDDL)
+		if err := db.Exec(sql).Error; err != nil {
+			return err
+		}
+		return nil
+	}
+	return db.Migrator().AddColumn(model, columnName)
 }
 
 func execCreateIndexIfMissing(db *gorm.DB, sql string) *gorm.DB {

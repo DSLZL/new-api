@@ -17,7 +17,7 @@ func TestFullLinkScan_RefreshesTemporalProfilesBeforeScan_WhenPrecomputeReadEnab
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
 
-	base := time.Date(2026, 4, 4, 9, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 0; i < 6; i++ {
 		require.NoError(t, model.DB.Create(&model.Fingerprint{
 			UserID:        8101,
@@ -38,17 +38,24 @@ func TestFullLinkScan_RefreshesTemporalProfilesBeforeScan_WhenPrecomputeReadEnab
 	oldTemporal := common.FingerprintEnableTemporalAnalysis
 	oldPrecomputeWrite := common.FingerprintEnableTemporalPrecomputeWrite
 	oldPrecomputeRead := common.FingerprintEnableTemporalPrecomputeRead
+	oldActiveWindow := os.Getenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
 	t.Cleanup(func() {
 		common.FingerprintEnabled = oldEnabled
 		common.FingerprintEnableTemporalAnalysis = oldTemporal
 		common.FingerprintEnableTemporalPrecomputeWrite = oldPrecomputeWrite
 		common.FingerprintEnableTemporalPrecomputeRead = oldPrecomputeRead
+		if oldActiveWindow == "" {
+			_ = os.Unsetenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", oldActiveWindow)
+		}
 	})
 
 	common.FingerprintEnabled = true
 	common.FingerprintEnableTemporalAnalysis = true
 	common.FingerprintEnableTemporalPrecomputeWrite = true
 	common.FingerprintEnableTemporalPrecomputeRead = true
+	_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", "24")
 
 	FullLinkScan()
 
@@ -65,7 +72,7 @@ func TestFullLinkScan_DoesNotRefreshTemporalProfiles_WhenPrecomputeReadDisabled(
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
 
-	base := time.Date(2026, 4, 4, 9, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 0; i < 6; i++ {
 		require.NoError(t, model.DB.Create(&model.Fingerprint{
 			UserID:        8301,
@@ -80,17 +87,24 @@ func TestFullLinkScan_DoesNotRefreshTemporalProfiles_WhenPrecomputeReadDisabled(
 	oldTemporal := common.FingerprintEnableTemporalAnalysis
 	oldPrecomputeWrite := common.FingerprintEnableTemporalPrecomputeWrite
 	oldPrecomputeRead := common.FingerprintEnableTemporalPrecomputeRead
+	oldActiveWindow := os.Getenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
 	t.Cleanup(func() {
 		common.FingerprintEnabled = oldEnabled
 		common.FingerprintEnableTemporalAnalysis = oldTemporal
 		common.FingerprintEnableTemporalPrecomputeWrite = oldPrecomputeWrite
 		common.FingerprintEnableTemporalPrecomputeRead = oldPrecomputeRead
+		if oldActiveWindow == "" {
+			_ = os.Unsetenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", oldActiveWindow)
+		}
 	})
 
 	common.FingerprintEnabled = true
 	common.FingerprintEnableTemporalAnalysis = true
 	common.FingerprintEnableTemporalPrecomputeWrite = true
 	common.FingerprintEnableTemporalPrecomputeRead = false
+	_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", "24")
 
 	FullLinkScan()
 
@@ -100,7 +114,7 @@ func TestFullLinkScan_DoesNotRefreshTemporalProfiles_WhenPrecomputeReadDisabled(
 func TestRefreshTemporalProfilesCron_SerializesConcurrentRuns(t *testing.T) {
 	initTestDB(t)
 
-	base := time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 0; i < 8; i++ {
 		require.NoError(t, model.DB.Create(&model.Fingerprint{
 			UserID:        8201,
@@ -112,15 +126,22 @@ func TestRefreshTemporalProfilesCron_SerializesConcurrentRuns(t *testing.T) {
 	oldEnabled := common.FingerprintEnabled
 	oldTemporal := common.FingerprintEnableTemporalAnalysis
 	oldPrecomputeWrite := common.FingerprintEnableTemporalPrecomputeWrite
+	oldActiveWindow := os.Getenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
 	t.Cleanup(func() {
 		common.FingerprintEnabled = oldEnabled
 		common.FingerprintEnableTemporalAnalysis = oldTemporal
 		common.FingerprintEnableTemporalPrecomputeWrite = oldPrecomputeWrite
+		if oldActiveWindow == "" {
+			_ = os.Unsetenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
+		} else {
+			_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", oldActiveWindow)
+		}
 	})
 
 	common.FingerprintEnabled = true
 	common.FingerprintEnableTemporalAnalysis = true
 	common.FingerprintEnableTemporalPrecomputeWrite = true
+	_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", "24")
 
 	var wg sync.WaitGroup
 	wg.Add(2)

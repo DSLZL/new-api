@@ -591,6 +591,95 @@ func TestFingerprintConfig_ReadsIPUAWriteOptimizationConfig(t *testing.T) {
 	}
 }
 
+func TestFingerprintConfig_ReadsScanAndCandidateBudgetConfig(t *testing.T) {
+	oldActiveHours := os.Getenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS")
+	oldFullScanMaxUsers := os.Getenv("FINGERPRINT_FULL_SCAN_MAX_USERS")
+	oldFullScanMaxPairs := os.Getenv("FINGERPRINT_FULL_SCAN_MAX_PAIRS")
+	oldFullScanMaxDuration := os.Getenv("FINGERPRINT_FULL_SCAN_MAX_DURATION_SECONDS")
+	oldCandidateMaxPerSource := os.Getenv("FINGERPRINT_CANDIDATE_MAX_PER_SOURCE")
+	oldCandidateLowSignalPerSource := os.Getenv("FINGERPRINT_CANDIDATE_LOW_SIGNAL_MAX_PER_SOURCE")
+	oldCandidateMaxTotal := os.Getenv("FINGERPRINT_CANDIDATE_MAX_TOTAL")
+	oldTemporalRefreshMaxUsers := os.Getenv("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS")
+	t.Cleanup(func() {
+		_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", oldActiveHours)
+		_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_USERS", oldFullScanMaxUsers)
+		_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_PAIRS", oldFullScanMaxPairs)
+		_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_DURATION_SECONDS", oldFullScanMaxDuration)
+		_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_PER_SOURCE", oldCandidateMaxPerSource)
+		_ = os.Setenv("FINGERPRINT_CANDIDATE_LOW_SIGNAL_MAX_PER_SOURCE", oldCandidateLowSignalPerSource)
+		_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_TOTAL", oldCandidateMaxTotal)
+		_ = os.Setenv("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS", oldTemporalRefreshMaxUsers)
+	})
+
+	_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", "72")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_USERS", "666")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_PAIRS", "12345")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_DURATION_SECONDS", "333")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_PER_SOURCE", "88")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_LOW_SIGNAL_MAX_PER_SOURCE", "22")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_TOTAL", "456")
+	_ = os.Setenv("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS", "777")
+
+	if got := GetFingerprintActiveUserWindowHours(); got != 72 {
+		t.Fatalf("expected active user window hours 72, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxUsers(); got != 666 {
+		t.Fatalf("expected full scan max users 666, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxPairs(); got != 12345 {
+		t.Fatalf("expected full scan max pairs 12345, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxDurationSeconds(); got != 333 {
+		t.Fatalf("expected full scan max duration seconds 333, got %v", got)
+	}
+	if got := GetFingerprintCandidateMaxPerSource(); got != 88 {
+		t.Fatalf("expected candidate max per source 88, got %v", got)
+	}
+	if got := GetFingerprintCandidateLowSignalMaxPerSource(); got != 22 {
+		t.Fatalf("expected candidate low signal max per source 22, got %v", got)
+	}
+	if got := GetFingerprintCandidateMaxTotal(); got != 456 {
+		t.Fatalf("expected candidate max total 456, got %v", got)
+	}
+	if got := GetFingerprintTemporalRefreshMaxUsers(); got != 777 {
+		t.Fatalf("expected temporal refresh max users 777, got %v", got)
+	}
+
+	_ = os.Setenv("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", "bad")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_USERS", "bad")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_PAIRS", "bad")
+	_ = os.Setenv("FINGERPRINT_FULL_SCAN_MAX_DURATION_SECONDS", "bad")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_PER_SOURCE", "bad")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_LOW_SIGNAL_MAX_PER_SOURCE", "bad")
+	_ = os.Setenv("FINGERPRINT_CANDIDATE_MAX_TOTAL", "bad")
+	_ = os.Setenv("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS", "bad")
+
+	if got := GetFingerprintActiveUserWindowHours(); got != 168 {
+		t.Fatalf("expected active user window hours fallback 168, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxUsers(); got != 3000 {
+		t.Fatalf("expected full scan max users fallback 3000, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxPairs(); got != 200000 {
+		t.Fatalf("expected full scan max pairs fallback 200000, got %v", got)
+	}
+	if got := GetFingerprintFullScanMaxDurationSeconds(); got != 600 {
+		t.Fatalf("expected full scan max duration seconds fallback 600, got %v", got)
+	}
+	if got := GetFingerprintCandidateMaxPerSource(); got != 200 {
+		t.Fatalf("expected candidate max per source fallback 200, got %v", got)
+	}
+	if got := GetFingerprintCandidateLowSignalMaxPerSource(); got != 40 {
+		t.Fatalf("expected candidate low signal max per source fallback 40, got %v", got)
+	}
+	if got := GetFingerprintCandidateMaxTotal(); got != 1200 {
+		t.Fatalf("expected candidate max total fallback 1200, got %v", got)
+	}
+	if got := GetFingerprintTemporalRefreshMaxUsers(); got != 1000 {
+		t.Fatalf("expected temporal refresh max users fallback 1000, got %v", got)
+	}
+}
+
 func TestFingerprintConfig_ReadsBehaviorConfig(t *testing.T) {
 	oldWeightKeystroke := os.Getenv("FINGERPRINT_WEIGHT_KEYSTROKE")
 	oldWeightMouse := os.Getenv("FINGERPRINT_WEIGHT_MOUSE")

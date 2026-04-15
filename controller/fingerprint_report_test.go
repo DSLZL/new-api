@@ -1323,6 +1323,7 @@ func TestLogin_Require2FA_DoesNotPersistKeystrokeProfile(t *testing.T) {
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Group:       "default",
+		AffCode:     fmt.Sprintf("aff-login2fa-%d", time.Now().UnixNano()),
 	}
 	require.NoError(t, model.DB.Create(user).Error)
 	require.NoError(t, model.DB.Create(&model.TwoFA{UserId: user.Id, Secret: "secret", IsEnabled: true}).Error)
@@ -1347,4 +1348,48 @@ func TestLogin_Require2FA_DoesNotPersistKeystrokeProfile(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `"success":true`)
 	require.Contains(t, recorder.Body.String(), `"require_2fa":true`)
 	require.Nil(t, model.GetLatestKeystrokeProfile(user.Id))
+}
+
+func TestLogin_FailsClosedWhenTwoFAStateUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	initFingerprintReportTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.TwoFA{}))
+	model.LOG_DB = model.DB
+	require.NoError(t, i18n.Init())
+
+	passwordHash, err := common.Password2Hash("12345678")
+	require.NoError(t, err)
+	user := &model.User{
+		Username:    "login2fa_db_error_user_2",
+		Password:    passwordHash,
+		DisplayName: "login2fa_db_error_user_2",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     fmt.Sprintf("aff-login2fa-err-%d", time.Now().UnixNano()),
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	// 破坏 twofa 表，模拟 2FA 状态查询时的数据库异常（例如旧库 schema 漂移）
+	require.NoError(t, model.DB.Exec(`DROP TABLE two_fas`).Error)
+
+	oldPasswordLoginEnabled := common.PasswordLoginEnabled
+	t.Cleanup(func() {
+		common.PasswordLoginEnabled = oldPasswordLoginEnabled
+	})
+	common.PasswordLoginEnabled = true
+
+	router := gin.New()
+	router.Use(sessions.Sessions("test-session", cookie.NewStore([]byte("test-secret"))))
+	router.POST("/api/user/login", Login)
+
+	loginBody := `{"username":"login2fa_db_error_user_2","password":"12345678"}`
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/user/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(recorder, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":false`)
+	require.NotContains(t, recorder.Body.String(), `"require_2fa":true`)
+	require.NotContains(t, recorder.Body.String(), `"id":`)
 }

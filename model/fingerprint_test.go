@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -12,13 +14,19 @@ import (
 
 func initFingerprintModelTestDB(t *testing.T) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:fingerprint_model_test?mode=memory&cache=shared"), &gorm.Config{})
+	oldDB := DB
+	dsn := fmt.Sprintf("file:fingerprint_model_test_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(8)
-	require.NoError(t, db.AutoMigrate(&UserDeviceProfile{}, &Fingerprint{}))
+	require.NoError(t, db.AutoMigrate(&UserDeviceProfile{}, &Fingerprint{}, &IPUAHistory{}))
 	DB = db
+	t.Cleanup(func() {
+		DB = oldDB
+		_ = sqlDB.Close()
+	})
 }
 
 func TestUpsertDeviceProfile_UpdatesFingerprintFieldsForExistingRecord(t *testing.T) {
@@ -162,14 +170,14 @@ func TestFingerprintInsert_NormalizesStorageHeavyFields(t *testing.T) {
 	t.Setenv("FINGERPRINT_MAX_PAGE_URL_LENGTH", "6")
 
 	fp := &Fingerprint{
-		UserID:         7,
-		IPAddress:      "1.2.3.4",
-		CompositeHash:  "cmp",
-		UserAgent:      "  abcdef  ",
-		FontsList:      "  xyzuvw  ",
-		WebRTCLocalIPs: " [\"10.0.0.1\"] ",
+		UserID:          7,
+		IPAddress:       "1.2.3.4",
+		CompositeHash:   "cmp",
+		UserAgent:       "  abcdef  ",
+		FontsList:       "  xyzuvw  ",
+		WebRTCLocalIPs:  " [\"10.0.0.1\"] ",
 		WebRTCPublicIPs: " [\"8.8.8.8\"] ",
-		PageURL:        "  https://example.com/path  ",
+		PageURL:         "  https://example.com/path  ",
 	}
 	require.NoError(t, fp.Insert())
 
@@ -244,3 +252,66 @@ func TestFingerprintInsert_WebRTCOverLimitBecomesEmptyArray(t *testing.T) {
 	require.Equal(t, "[]", got.WebRTCPublicIPs)
 }
 
+func TestGetActiveUserIDsWithFingerprints_FiltersByWindowAndLimit(t *testing.T) {
+	initFingerprintModelTestDB(t)
+
+	now := time.Now().UTC()
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8401, CompositeHash: "u8401", CreatedAt: now.Add(-20 * time.Minute)}).Error)
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8402, CompositeHash: "u8402", CreatedAt: now.Add(-10 * time.Minute)}).Error)
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8403, CompositeHash: "u8403", CreatedAt: now.Add(-30 * time.Hour)}).Error)
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8404, CompositeHash: "u8404", CreatedAt: now.Add(-5 * time.Minute)}).Error)
+
+	got := GetActiveUserIDsWithFingerprints(24, 2)
+	require.Equal(t, []int{8404, 8402}, got)
+}
+
+func TestGetActiveUserIDsWithFingerprints_DefaultWindowWhenNonPositive(t *testing.T) {
+	initFingerprintModelTestDB(t)
+
+	now := time.Now().UTC()
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8501, CompositeHash: "u8501", CreatedAt: now.Add(-6 * 24 * time.Hour)}).Error)
+	require.NoError(t, DB.Create(&Fingerprint{UserID: 8502, CompositeHash: "u8502", CreatedAt: now.Add(-9 * 24 * time.Hour)}).Error)
+
+	got := GetActiveUserIDsWithFingerprints(0, 10)
+	require.Equal(t, []int{8501}, got)
+}
+
+func TestGetActiveUserIDsWithFingerprints_ReturnsNilWhenMaxUsersNonPositive(t *testing.T) {
+	initFingerprintModelTestDB(t)
+	require.Nil(t, GetActiveUserIDsWithFingerprints(24, 0))
+	require.Nil(t, GetActiveUserIDsWithFingerprints(24, -1))
+}
+
+func TestCountUniqueUAs_SQLiteAndPostgresExpression(t *testing.T) {
+	initFingerprintModelTestDB(t)
+
+	require.NoError(t, DB.Create(&IPUAHistory{UserID: 9101, IPAddress: "1.1.1.1", UABrowser: "Chrome", UAOS: "Windows"}).Error)
+	require.NoError(t, DB.Create(&IPUAHistory{UserID: 9101, IPAddress: "2.2.2.2", UABrowser: "Chrome", UAOS: "Windows"}).Error)
+	require.NoError(t, DB.Create(&IPUAHistory{UserID: 9101, IPAddress: "3.3.3.3", UABrowser: "Safari", UAOS: "macOS"}).Error)
+
+	oldSQLite := common.UsingSQLite
+	oldMySQL := common.UsingMySQL
+	oldPostgreSQL := common.UsingPostgreSQL
+	t.Cleanup(func() {
+		common.UsingSQLite = oldSQLite
+		common.UsingMySQL = oldMySQL
+		common.UsingPostgreSQL = oldPostgreSQL
+	})
+
+	common.UsingSQLite = true
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = false
+	require.Equal(t, 2, CountUniqueUAs(9101))
+	require.Equal(t, "COUNT(DISTINCT (ua_browser || '|' || ua_os))", uniqueUACountExpression())
+
+	common.UsingSQLite = false
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = true
+	require.Equal(t, 2, CountUniqueUAs(9101))
+	require.Equal(t, "COUNT(DISTINCT (ua_browser || '|' || ua_os))", uniqueUACountExpression())
+
+	common.UsingSQLite = false
+	common.UsingMySQL = true
+	common.UsingPostgreSQL = false
+	require.Equal(t, "COUNT(DISTINCT CONCAT(ua_browser, '|', ua_os))", uniqueUACountExpression())
+}

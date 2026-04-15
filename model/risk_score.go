@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // UserRiskScore 用户风险评分
@@ -49,7 +51,7 @@ func GetUserRiskScore(userID int) *UserRiskScore {
 func UpsertRiskScore(score *UserRiskScore) error {
 	existing := GetUserRiskScore(score.UserID)
 	if existing != nil {
-		return DB.Model(existing).Updates(map[string]interface{}{
+		return DB.Model(existing).Updates(map[string]any{
 			"risk_score":              score.RiskScore,
 			"risk_level":              score.RiskLevel,
 			"linked_accounts":         score.LinkedAccounts,
@@ -82,5 +84,32 @@ func GetTopRiskUsers(limit int) []*UserRiskScore {
 func GetAllUserIDsWithFingerprints() []int {
 	var userIDs []int
 	DB.Model(&Fingerprint{}).Distinct("user_id").Pluck("user_id", &userIDs)
+	return userIDs
+}
+
+func GetActiveUserIDsWithFingerprints(activeWindowHours int, maxUsers int) []int {
+	if maxUsers <= 0 {
+		return nil
+	}
+	if activeWindowHours <= 0 {
+		activeWindowHours = 24 * 7
+	}
+
+	cutoff := time.Now().Add(-time.Duration(activeWindowHours) * time.Hour)
+	userIDs := make([]int, 0, maxUsers)
+	if err := DB.Model(&Fingerprint{}).
+		Where("created_at >= ?", cutoff).
+		Select("user_id").
+		Group("user_id").
+		Order("MAX(created_at) DESC").
+		Limit(maxUsers).
+		Pluck("user_id", &userIDs).Error; err != nil {
+		common.SysError("failed to load active users with fingerprints: " + err.Error())
+		fallbackUserIDs := GetAllUserIDsWithFingerprints()
+		if len(fallbackUserIDs) > maxUsers {
+			return fallbackUserIDs[:maxUsers]
+		}
+		return fallbackUserIDs
+	}
 	return userIDs
 }

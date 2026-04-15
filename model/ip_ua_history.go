@@ -1,7 +1,6 @@
 package model
 
 import (
-	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -49,10 +48,10 @@ func (IPUAHistory) TableName() string {
 }
 
 var (
-	ipuaWriteGateMu      sync.Mutex
-	ipuaLastWriteByKey   = make(map[string]time.Time)
-	ipuaReservedByKey    = make(map[string]time.Time)
-	ipuaWriteGateSweeps  int64
+	ipuaWriteGateMu     sync.Mutex
+	ipuaLastWriteByKey  = make(map[string]time.Time)
+	ipuaReservedByKey   = make(map[string]time.Time)
+	ipuaWriteGateSweeps int64
 )
 
 func shouldSampleIPUAWrite() bool {
@@ -231,14 +230,14 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 		// MySQL/SQLite: 先查后更新
 		var existing IPUAHistory
 		result := DB.Where("user_id = ? AND ip_address = ? AND ua_browser = ? AND ua_os = ?",
-			record.UserID, record.IPAddress, record.UABrowser, record.UAOS).First(&existing)
+			record.UserID, record.IPAddress, record.UABrowser, record.UAOS).
+			Limit(1).
+			Find(&existing)
 
 		if result.Error != nil {
-			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				err = DB.Create(record).Error
-			} else {
-				err = result.Error
-			}
+			err = result.Error
+		} else if result.RowsAffected == 0 {
+			err = DB.Create(record).Error
 		} else {
 			ipType := existing.IPType
 			if record.IPType != "" {
@@ -262,7 +261,7 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 			}
 
 			err = DB.Model(&existing).Updates(map[string]any{
-				"request_count": existing.RequestCount + 1,
+				"request_count": gorm.Expr("request_count + 1"),
 				"last_seen":     now,
 				"user_agent":    record.UserAgent,
 				"endpoint":      record.Endpoint,
@@ -330,19 +329,24 @@ func FindOtherUsersByIP(ip string, excludeUserID int) []int {
 	return userIDs
 }
 
+// uniqueUACountExpression 返回跨数据库兼容的唯一 UA 计数表达式
+func uniqueUACountExpression() string {
+	if common.UsingMySQL {
+		return "COUNT(DISTINCT CONCAT(ua_browser, '|', ua_os))"
+	}
+	return "COUNT(DISTINCT (ua_browser || '|' || ua_os))"
+}
+
 // CountUniqueUAs 统计用户的唯一UA数
 func CountUniqueUAs(userID int) int {
 	var count int64
-	if common.UsingPostgreSQL {
-		DB.Model(&IPUAHistory{}).
-			Where("user_id = ?", userID).
-			Select("COUNT(DISTINCT (ua_browser || '|' || ua_os))").
-			Count(&count)
-	} else {
-		DB.Model(&IPUAHistory{}).
-			Where("user_id = ?", userID).
-			Select("COUNT(DISTINCT CONCAT(ua_browser, '|', ua_os))").
-			Count(&count)
+	expression := uniqueUACountExpression()
+	if err := DB.Model(&IPUAHistory{}).
+		Where("user_id = ?", userID).
+		Select(expression).
+		Count(&count).Error; err != nil {
+		common.SysError("failed to count unique uas: " + err.Error())
+		return 0
 	}
 	return int(count)
 }

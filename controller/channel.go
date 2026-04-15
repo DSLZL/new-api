@@ -417,19 +417,12 @@ func GetChannelKey(c *gin.Context) {
 
 // validateTwoFactorAuth 统一的2FA验证函数
 func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
-	// 尝试验证TOTP
-	if cleanCode, err := common.ValidateNumericCode(code); err == nil {
-		if isValid, _ := twoFA.ValidateTOTPAndUpdateUsage(cleanCode); isValid {
-			return true
-		}
+	isValid, err := validateTwoFactorCodeAndCountFailure(twoFA, code)
+	if err != nil {
+		common.SysLog("通用验证流程更新2FA失败次数失败: " + err.Error())
+		return false
 	}
-
-	// 尝试验证备用码
-	if isValid, err := twoFA.ValidateBackupCodeAndUpdateUsage(code); err == nil && isValid {
-		return true
-	}
-
-	return false
+	return isValid
 }
 
 // validateChannel 通用的渠道校验函数

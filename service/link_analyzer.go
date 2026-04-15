@@ -140,62 +140,144 @@ func AnalyzeAccountLinks(userID int, newFP *model.Fingerprint) {
 	IncrementalLinkScan(userID, newFP)
 }
 
-// findCandidates 根据指纹各维度查找候选关联用户
-// 同时通过设备指纹（高权重）和网络指纹（IP/子网）两条路径发现候选，
-// 确保即使浏览器处于无痕模式（高权重哈希被随机化），
-// 仍能通过IP匹配发现候选用户进入打分流程。
-func findCandidates(userID int, fp *model.Fingerprint) []int {
-	candidateSet := make(map[int]bool)
+type fingerprintCandidateBudget struct {
+	MaxPerSource          int
+	MaxLowSignalPerSource int
+	MaxTotal              int
+}
 
-	appendCandidates := func(ids []int) {
-		for _, uid := range ids {
-			if uid != userID {
-				candidateSet[uid] = true
-			}
+func getFingerprintCandidateBudget() fingerprintCandidateBudget {
+	budget := fingerprintCandidateBudget{
+		MaxPerSource:          common.GetFingerprintCandidateMaxPerSource(),
+		MaxLowSignalPerSource: common.GetFingerprintCandidateLowSignalMaxPerSource(),
+		MaxTotal:              common.GetFingerprintCandidateMaxTotal(),
+	}
+	if budget.MaxPerSource > budget.MaxTotal {
+		budget.MaxPerSource = budget.MaxTotal
+	}
+	if budget.MaxLowSignalPerSource > budget.MaxTotal {
+		budget.MaxLowSignalPerSource = budget.MaxTotal
+	}
+	if budget.MaxLowSignalPerSource > budget.MaxPerSource {
+		budget.MaxLowSignalPerSource = budget.MaxPerSource
+	}
+	return budget
+}
+
+func appendCandidatesWithBudget(candidateSet map[int]struct{}, ids []int, sourceLimit int, currentUserID int, candidateUserID int, maxTotal int) bool {
+	if len(candidateSet) >= maxTotal {
+		return true
+	}
+	if sourceLimit <= 0 {
+		return len(candidateSet) >= maxTotal
+	}
+
+	added := 0
+	for _, uid := range ids {
+		if uid <= 0 || uid == currentUserID {
+			continue
 		}
+		if candidateUserID > 0 && uid != candidateUserID {
+			continue
+		}
+		if _, exists := candidateSet[uid]; exists {
+			continue
+		}
+		candidateSet[uid] = struct{}{}
+		added++
+		if added >= sourceLimit || len(candidateSet) >= maxTotal {
+			break
+		}
+	}
+	return len(candidateSet) >= maxTotal
+}
+
+func collectCandidatesByFingerprint(userID int, fp *model.Fingerprint, candidateSet map[int]struct{}, candidateUserID int) {
+	if userID <= 0 || fp == nil {
+		return
+	}
+
+	budget := getFingerprintCandidateBudget()
+	stop := false
+	appendCandidates := func(ids []int, lowSignal bool) {
+		if stop {
+			return
+		}
+		limit := budget.MaxPerSource
+		if lowSignal {
+			limit = budget.MaxLowSignalPerSource
+		}
+		stop = appendCandidatesWithBudget(candidateSet, ids, limit, userID, candidateUserID, budget.MaxTotal)
 	}
 
 	// ─── 路径1: 设备指纹匹配（正常浏览器模式下高命中率）───
-	appendCandidates(model.FindUsersByDeviceID(fp.LocalDeviceID))
-	appendCandidates(model.FindUsersByCanvasHash(fp.CanvasHash))
-	appendCandidates(model.FindUsersByWebGLHash(fp.WebGLHash))
-	appendCandidates(model.FindUsersByWebGLDeepHash(fp.WebGLDeepHash))
-	appendCandidates(model.FindUsersByClientRectsHash(fp.ClientRectsHash))
-	appendCandidates(model.FindUsersByMediaDevicesHash(fp.MediaDevicesHash))
-	appendCandidates(model.FindUsersByMediaDeviceGroupHash(fp.MediaDeviceGroupHash))
-	appendCandidates(model.FindUsersBySpeechVoicesHash(fp.SpeechVoicesHash))
-	appendCandidates(model.FindUsersByAudioHash(fp.AudioHash))
-	appendCandidates(model.FindUsersByFontsHash(fp.FontsHash))
-	appendCandidates(model.FindUsersByCompositeHash(fp.CompositeHash))
+	appendCandidates(model.FindUsersByDeviceID(fp.LocalDeviceID), false)
+	appendCandidates(model.FindUsersByCanvasHash(fp.CanvasHash), false)
+	appendCandidates(model.FindUsersByWebGLHash(fp.WebGLHash), false)
+	appendCandidates(model.FindUsersByWebGLDeepHash(fp.WebGLDeepHash), false)
+	appendCandidates(model.FindUsersByClientRectsHash(fp.ClientRectsHash), false)
+	appendCandidates(model.FindUsersByMediaDevicesHash(fp.MediaDevicesHash), false)
+	appendCandidates(model.FindUsersByMediaDeviceGroupHash(fp.MediaDeviceGroupHash), false)
+	appendCandidates(model.FindUsersBySpeechVoicesHash(fp.SpeechVoicesHash), false)
+	appendCandidates(model.FindUsersByAudioHash(fp.AudioHash), false)
+	appendCandidates(model.FindUsersByFontsHash(fp.FontsHash), false)
+	appendCandidates(model.FindUsersByCompositeHash(fp.CompositeHash), false)
 
 	// ─── 路径2: 协议层指纹 ───
-	appendCandidates(model.FindUsersByJA3(fp.TLSJA3Hash))
+	appendCandidates(model.FindUsersByJA3(fp.TLSJA3Hash), false)
 	if common.FingerprintEnableJA4 {
-		appendCandidates(model.FindUsersByJA4(fp.JA4))
+		appendCandidates(model.FindUsersByJA4(fp.JA4), false)
 	}
-	appendCandidates(model.FindUsersByHTTPHeaderHash(fp.HTTPHeaderHash))
+	appendCandidates(model.FindUsersByHTTPHeaderHash(fp.HTTPHeaderHash), false)
 	if common.FingerprintEnableDNSLeak {
-		appendCandidates(model.FindUsersByDNSResolverIP(fp.DNSResolverIP))
+		appendCandidates(model.FindUsersByDNSResolverIP(fp.DNSResolverIP), false)
 	}
 	if common.FingerprintEnableETag {
-		appendCandidates(model.FindUsersByETagID(fp.ETagID))
+		appendCandidates(model.FindUsersByETagID(fp.ETagID), false)
 	}
-	appendCandidates(model.FindUsersByPersistentID(fp.PersistentID))
+	appendCandidates(model.FindUsersByPersistentID(fp.PersistentID), false)
 
 	// ─── 路径3: IP/子网匹配（无痕模式下的关键发现路径）───
 	// 即使所有浏览器指纹哈希因无痕噪声而不同，
 	// 同一台机器的IP地址不变，仍可发现候选用户。
-	appendCandidates(model.FindUsersByIP(fp.IPAddress))
+	appendCandidates(model.FindUsersByIP(fp.IPAddress), true)
 	subnet := GetSubnet24(fp.IPAddress)
 	if subnet != "" {
-		appendCandidates(model.FindUsersByIPSubnet(subnet))
+		appendCandidates(model.FindUsersByIPSubnet(subnet), true)
 	}
+}
 
+func collectCandidatesByIPHistory(userID int, candidateSet map[int]struct{}, candidateUserID int) {
+	if userID <= 0 {
+		return
+	}
+	budget := getFingerprintCandidateBudget()
+	for _, ip := range model.GetUserIPs(userID) {
+		if strings.TrimSpace(ip) == "" {
+			continue
+		}
+		if appendCandidatesWithBudget(candidateSet, model.FindUsersByIP(ip), budget.MaxLowSignalPerSource, userID, candidateUserID, budget.MaxTotal) {
+			return
+		}
+	}
+}
+
+func candidateSetToSlice(candidateSet map[int]struct{}) []int {
 	result := make([]int, 0, len(candidateSet))
 	for uid := range candidateSet {
 		result = append(result, uid)
 	}
 	return result
+}
+
+// findCandidates 根据指纹各维度查找候选关联用户
+// 同时通过设备指纹（高权重）和网络指纹（IP/子网）两条路径发现候选，
+// 确保即使浏览器处于无痕模式（高权重哈希被随机化），
+// 仍能通过IP匹配发现候选用户进入打分流程。
+func findCandidates(userID int, fp *model.Fingerprint) []int {
+	candidateSet := make(map[int]struct{})
+	collectCandidatesByFingerprint(userID, fp, candidateSet, 0)
+	return candidateSetToSlice(candidateSet)
 }
 
 func computeBestLinkScore(userA int, fpA *model.Fingerprint, userB int, fpsB []*model.Fingerprint) *LinkResult {

@@ -286,63 +286,18 @@ func QueryUserAssociationsWithOptions(
 	}
 
 	// ──────────────────────────────────────────────────────────
-	// 3. 搜索候选账号（此部分逻辑不变）
+	// 3. 搜索候选账号（预算化召回）
 	// ──────────────────────────────────────────────────────────
-	candidateSet := make(map[int]bool)
+	candidateSet := make(map[int]struct{})
 	for _, fp := range targetFPs {
-		appendUnique := func(ids []int) {
-			for _, uid := range ids {
-				if uid == targetUserID {
-					continue
-				}
-				if candidateUserID > 0 && uid != candidateUserID {
-					continue
-				}
-				candidateSet[uid] = true
-			}
-		}
-
-		appendUnique(model.FindUsersByDeviceID(fp.LocalDeviceID))
-		appendUnique(model.FindUsersByCanvasHash(fp.CanvasHash))
-		appendUnique(model.FindUsersByWebGLHash(fp.WebGLHash))
-		appendUnique(model.FindUsersByWebGLDeepHash(fp.WebGLDeepHash))
-		appendUnique(model.FindUsersByClientRectsHash(fp.ClientRectsHash))
-		appendUnique(model.FindUsersByMediaDevicesHash(fp.MediaDevicesHash))
-		appendUnique(model.FindUsersByMediaDeviceGroupHash(fp.MediaDeviceGroupHash))
-		appendUnique(model.FindUsersBySpeechVoicesHash(fp.SpeechVoicesHash))
-		appendUnique(model.FindUsersByAudioHash(fp.AudioHash))
-		appendUnique(model.FindUsersByFontsHash(fp.FontsHash))
-		appendUnique(model.FindUsersByCompositeHash(fp.CompositeHash))
-		appendUnique(model.FindUsersByJA3(fp.TLSJA3Hash))
-		if common.FingerprintEnableJA4 {
-			appendUnique(model.FindUsersByJA4(fp.JA4))
-		}
-		if common.FingerprintEnableETag {
-			appendUnique(model.FindUsersByETagID(fp.ETagID))
-		}
-		appendUnique(model.FindUsersByHTTPHeaderHash(fp.HTTPHeaderHash))
-		if common.FingerprintEnableDNSLeak {
-			appendUnique(model.FindUsersByDNSResolverIP(fp.DNSResolverIP))
-		}
-		appendUnique(model.FindUsersByPersistentID(fp.PersistentID))
-		appendUnique(model.FindUsersByIP(fp.IPAddress))
-		subnet := GetSubnet24(fp.IPAddress)
-		appendUnique(model.FindUsersByIPSubnet(subnet))
-	}
-
-	// 通过IP历史交叉查找
-	targetIPs := model.GetUserIPs(targetUserID)
-	for _, ip := range targetIPs {
-		for _, uid := range model.FindUsersByIP(ip) {
-			if uid == targetUserID {
-				continue
-			}
-			if candidateUserID > 0 && uid != candidateUserID {
-				continue
-			}
-			candidateSet[uid] = true
+		collectCandidatesByFingerprint(targetUserID, fp, candidateSet, candidateUserID)
+		if len(candidateSet) >= common.GetFingerprintCandidateMaxTotal() {
+			break
 		}
 	}
+
+	// 通过IP历史交叉查找（低区分度来源，使用更严格预算）
+	collectCandidatesByIPHistory(targetUserID, candidateSet, candidateUserID)
 
 	// 4. 移除白名单
 	whitelisted := model.GetWhitelistedPairs(targetUserID)

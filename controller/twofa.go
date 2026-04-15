@@ -30,6 +30,37 @@ type Setup2FAResponse struct {
 	BackupCodes []string `json:"backup_codes"`
 }
 
+func validateTwoFactorCodeAndCountFailure(twoFA *model.TwoFA, rawCode string) (bool, error) {
+	cleanCode, numericErr := common.ValidateNumericCode(rawCode)
+	if numericErr == nil {
+		isValidTOTP, verifyErr := twoFA.ValidateTOTPAndUpdateUsage(cleanCode)
+		if verifyErr != nil {
+			return false, verifyErr
+		}
+		if isValidTOTP {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	if common.ValidateBackupCode(rawCode) {
+		isValidBackup, verifyErr := twoFA.ValidateBackupCodeAndUpdateUsage(rawCode)
+		if verifyErr != nil {
+			return false, verifyErr
+		}
+		if isValidBackup {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	if err := twoFA.IncrementFailedAttempts(); err != nil {
+		common.SysLog("更新2FA失败次数失败: " + err.Error())
+		return false, err
+	}
+	return false, nil
+}
+
 // Setup2FA 初始化2FA设置
 func Setup2FA(c *gin.Context) {
 	userId := c.GetInt("id")
@@ -229,28 +260,15 @@ func Disable2FA(c *gin.Context) {
 	}
 
 	// 验证TOTP验证码或备用码
-	cleanCode, err := common.ValidateNumericCode(req.Code)
-	isValidTOTP := false
-	isValidBackup := false
-
-	if err == nil {
-		// 尝试验证TOTP
-		isValidTOTP, _ = twoFA.ValidateTOTPAndUpdateUsage(cleanCode)
+	isValid, err := validateTwoFactorCodeAndCountFailure(twoFA, req.Code)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
 	}
-
-	if !isValidTOTP {
-		// 尝试验证备用码
-		isValidBackup, err = twoFA.ValidateBackupCodeAndUpdateUsage(req.Code)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-	}
-
-	if !isValidTOTP && !isValidBackup {
+	if !isValid {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "验证码或备用码错误，请重试",
@@ -449,28 +467,15 @@ func Verify2FALogin(c *gin.Context) {
 	}
 
 	// 验证TOTP验证码或备用码
-	cleanCode, err := common.ValidateNumericCode(req.Code)
-	isValidTOTP := false
-	isValidBackup := false
-
-	if err == nil {
-		// 尝试验证TOTP
-		isValidTOTP, _ = twoFA.ValidateTOTPAndUpdateUsage(cleanCode)
+	isValid, err := validateTwoFactorCodeAndCountFailure(twoFA, req.Code)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
 	}
-
-	if !isValidTOTP {
-		// 尝试验证备用码
-		isValidBackup, err = twoFA.ValidateBackupCodeAndUpdateUsage(req.Code)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
-	}
-
-	if !isValidTOTP && !isValidBackup {
+	if !isValid {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": "验证码或备用码错误，请重试",

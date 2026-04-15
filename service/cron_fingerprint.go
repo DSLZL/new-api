@@ -2,7 +2,9 @@ package service
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,11 +69,19 @@ func FullLinkScan() {
 	CleanOldBehaviorProfiles()
 	CheckAndUpdateASNData()
 
-	for _, pair := range collectFullScanPairs() {
+	maxDuration := time.Duration(common.GetFingerprintFullScanMaxDurationSeconds()) * time.Second
+	pairs := collectFullScanPairs()
+	processedPairs := 0
+	for _, pair := range pairs {
+		if maxDuration > 0 && time.Since(startTime) >= maxDuration {
+			common.SysLog(fmt.Sprintf("full link scan budget reached, stop by duration: processed=%d queued=%d max_duration=%s", processedPairs, len(pairs), maxDuration))
+			break
+		}
 		recomputePairSnapshot(pair.UserA, pair.UserB, nil, false)
+		processedPairs++
 	}
 
-	common.SysLog("full link scan completed in " + time.Since(startTime).String())
+	common.SysLog(fmt.Sprintf("full link scan completed in %s, processed_pairs=%d, queued_pairs=%d", time.Since(startTime), processedPairs, len(pairs)))
 }
 
 // IncrementalLinkScan 增量关联扫描（仅重算指定用户涉及 pair）
@@ -93,14 +103,70 @@ type accountPair struct {
 }
 
 func collectFullScanPairs() []accountPair {
-	allUserIDs := collectAllRelatedUserIDs()
-	pairSet := make(map[string]accountPair)
-	for i := 0; i < len(allUserIDs); i++ {
-		for j := i + 1; j < len(allUserIDs); j++ {
-			addPair(pairSet, allUserIDs[i], allUserIDs[j])
+	maxUsers := common.GetFingerprintFullScanMaxUsers()
+	maxPairs := common.GetFingerprintFullScanMaxPairs()
+	if maxUsers <= 0 || maxPairs <= 0 {
+		return nil
+	}
+
+	activeWindowHours := common.GetFingerprintActiveUserWindowHours()
+	selectedUserIDs := selectFullScanUserIDs(maxUsers, activeWindowHours)
+	if len(selectedUserIDs) < 2 {
+		return nil
+	}
+	sortUsersByStableSeed(selectedUserIDs, stableUserOrderSeed())
+
+	pairs := make([]accountPair, 0, maxPairs)
+	for i := 0; i < len(selectedUserIDs); i++ {
+		for j := i + 1; j < len(selectedUserIDs); j++ {
+			a, b := model.NormalizePair(selectedUserIDs[i], selectedUserIDs[j])
+			if a == b {
+				continue
+			}
+			pairs = append(pairs, accountPair{UserA: a, UserB: b})
+			if len(pairs) >= maxPairs {
+				return pairs
+			}
 		}
 	}
-	return flattenPairs(pairSet)
+	return pairs
+}
+
+
+func selectFullScanUserIDs(maxUsers int, activeWindowHours int) []int {
+	if maxUsers <= 0 {
+		return nil
+	}
+
+	selectedSet := make(map[int]struct{}, maxUsers)
+	selected := make([]int, 0, maxUsers)
+	appendUser := func(userID int) bool {
+		if userID <= 0 {
+			return false
+		}
+		if _, exists := selectedSet[userID]; exists {
+			return false
+		}
+		selectedSet[userID] = struct{}{}
+		selected = append(selected, userID)
+		return len(selected) >= maxUsers
+	}
+
+	for _, userID := range model.GetActiveUserIDsWithFingerprints(activeWindowHours, maxUsers) {
+		if appendUser(userID) {
+			return selected
+		}
+	}
+
+	fallbackUserIDs := collectAllRelatedUserIDs()
+	sort.Ints(fallbackUserIDs)
+	for _, userID := range fallbackUserIDs {
+		if appendUser(userID) {
+			break
+		}
+	}
+
+	return selected
 }
 
 func collectIncrementalScanPairs(userID int, latestFP *model.Fingerprint) []accountPair {
@@ -298,11 +364,47 @@ func addPair(pairSet map[string]accountPair, userA, userB int) {
 	pairSet[key] = accountPair{UserA: a, UserB: b}
 }
 
+func stableUserOrderSeed() uint64 {
+	nowUTC := time.Now().UTC()
+	year, month, day := nowUTC.Date()
+	hour := nowUTC.Hour()
+	hourBucket := hour / 6
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(fmt.Sprintf("%04d-%02d-%02d-%d", year, int(month), day, hourBucket)))
+	return h.Sum64()
+}
+
+func sortUsersByStableSeed(userIDs []int, seed uint64) {
+	if len(userIDs) <= 1 {
+		return
+	}
+	sort.Slice(userIDs, func(i, j int) bool {
+		a := mixUserIDWithSeed(userIDs[i], seed)
+		b := mixUserIDWithSeed(userIDs[j], seed)
+		if a == b {
+			return userIDs[i] < userIDs[j]
+		}
+		return a < b
+	})
+}
+
+func mixUserIDWithSeed(userID int, seed uint64) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(fmt.Sprintf("%d:%d", userID, seed)))
+	return h.Sum64()
+}
+
 func flattenPairs(pairSet map[string]accountPair) []accountPair {
 	pairs := make([]accountPair, 0, len(pairSet))
 	for _, pair := range pairSet {
 		pairs = append(pairs, pair)
 	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].UserA == pairs[j].UserA {
+			return pairs[i].UserB < pairs[j].UserB
+		}
+		return pairs[i].UserA < pairs[j].UserA
+	})
 	return pairs
 }
 

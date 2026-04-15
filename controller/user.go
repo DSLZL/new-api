@@ -67,7 +67,13 @@ func Login(c *gin.Context) {
 	}
 
 	// 检查是否启用2FA
-	if model.IsTwoFAEnabled(user.Id) {
+	twoFAEnabled, twoFAErr := model.IsTwoFAEnabledSafe(user.Id)
+	if twoFAErr != nil {
+		common.SysLog(fmt.Sprintf("Login 2FA state check failed for user %s(id=%d): %v", username, user.Id, twoFAErr))
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		return
+	}
+	if twoFAEnabled {
 		// 设置pending session，等待2FA验证
 		session := sessions.Default(c)
 		session.Set("pending_username", user.Username)
@@ -81,7 +87,7 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": i18n.T(c, i18n.MsgUserRequire2FA),
 			"success": true,
-			"data": map[string]interface{}{
+			"data": map[string]any{
 				"require_2fa": true,
 			},
 		})

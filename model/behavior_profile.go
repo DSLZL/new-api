@@ -74,9 +74,11 @@ func GetLatestKeystrokeProfile(userID int) *KeystrokeProfile {
 		return nil
 	}
 	var profile KeystrokeProfile
-	if err := DB.Where("user_id = ?", userID).
+	result := DB.Where("user_id = ?", userID).
 		Order("updated_at DESC").
-		First(&profile).Error; err != nil {
+		Limit(1).
+		Find(&profile)
+	if result.Error != nil || result.RowsAffected == 0 {
 		return nil
 	}
 	return &profile
@@ -174,9 +176,11 @@ func GetLatestMouseProfile(userID int) *MouseProfile {
 		return nil
 	}
 	var profile MouseProfile
-	if err := DB.Where("user_id = ?", userID).
+	result := DB.Where("user_id = ?", userID).
 		Order("updated_at DESC").
-		First(&profile).Error; err != nil {
+		Limit(1).
+		Find(&profile)
+	if result.Error != nil || result.RowsAffected == 0 {
 		return nil
 	}
 	return &profile

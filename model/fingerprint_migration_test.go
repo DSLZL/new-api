@@ -47,7 +47,7 @@ func TestMigrateFingerprintETagColumn_RenamesLegacyColumn(t *testing.T) {
 	require.Equal(t, "legacy-etag", etag)
 }
 
-func TestMigrateFingerprintETagColumn_BackfillsCanonicalColumn(t *testing.T) {
+func TestMigrateFingerprintETagColumn_BackfillsWhenBothColumnsExist(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.Exec(`CREATE TABLE user_fingerprints (
@@ -57,11 +57,39 @@ func TestMigrateFingerprintETagColumn_BackfillsCanonicalColumn(t *testing.T) {
 		etag_id text not null default '',
 		e_tag_id text not null default ''
 	)`).Error)
-	require.NoError(t, db.Exec(`INSERT INTO user_fingerprints (user_id, composite_hash, etag_id, e_tag_id) VALUES (1, 'fp-1', '', 'legacy-etag')`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO user_fingerprints (user_id, composite_hash, etag_id, e_tag_id) VALUES
+		(1, 'fp-1', '', 'legacy-fill'),
+		(2, 'fp-2', 'etag-new', 'legacy-old')`).Error)
 
 	require.NoError(t, migrateFingerprintETagColumn(db))
+	require.True(t, db.Migrator().HasColumn(&Fingerprint{}, "etag_id"))
+	require.True(t, db.Migrator().HasColumn(&Fingerprint{}, "e_tag_id"))
 
-	var etag string
-	require.NoError(t, db.Raw(`SELECT etag_id FROM user_fingerprints WHERE user_id = ?`, 1).Scan(&etag).Error)
-	require.Equal(t, "legacy-etag", etag)
+	var etagUser1 string
+	require.NoError(t, db.Raw(`SELECT etag_id FROM user_fingerprints WHERE user_id = ?`, 1).Scan(&etagUser1).Error)
+	require.Equal(t, "legacy-fill", etagUser1)
+
+	var etagUser2 string
+	require.NoError(t, db.Raw(`SELECT etag_id FROM user_fingerprints WHERE user_id = ?`, 2).Scan(&etagUser2).Error)
+	require.Equal(t, "etag-new", etagUser2)
+}
+
+func TestEnsureFingerprintRequiredColumns_AddsMissingColumnsOnSQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`CREATE TABLE user_fingerprints (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		composite_hash text not null default ''
+	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE user_risk_scores (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		risk_score real not null default 0
+	)`).Error)
+
+	require.NoError(t, ensureFingerprintRequiredColumns(db))
+	require.True(t, db.Migrator().HasColumn(&Fingerprint{}, "webgl_deep_hash"))
+	require.True(t, db.Migrator().HasColumn(&UserRiskScore{}, "ua_os_consistency"))
 }

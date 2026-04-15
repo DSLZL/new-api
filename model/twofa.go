@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var ErrTwoFAStateUnavailable = errors.New("2FA状态不可用")
+
 // TwoFA 用户2FA设置表
 type TwoFA struct {
 	Id             int            `json:"id" gorm:"primaryKey"`
@@ -42,12 +44,12 @@ func GetTwoFAByUserId(userId int) (*TwoFA, error) {
 	}
 
 	var twoFA TwoFA
-	err := DB.Where("user_id = ?", userId).First(&twoFA).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil // 返回nil表示未设置2FA
-		}
-		return nil, err
+	result := DB.Where("user_id = ?", userId).Limit(1).Find(&twoFA)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil // 返回nil表示未设置2FA
 	}
 
 	return &twoFA, nil
@@ -55,11 +57,23 @@ func GetTwoFAByUserId(userId int) (*TwoFA, error) {
 
 // IsTwoFAEnabled 检查用户是否启用了2FA
 func IsTwoFAEnabled(userId int) bool {
-	twoFA, err := GetTwoFAByUserId(userId)
-	if err != nil || twoFA == nil {
+	enabled, err := IsTwoFAEnabledSafe(userId)
+	if err != nil {
 		return false
 	}
-	return twoFA.IsEnabled
+	return enabled
+}
+
+// IsTwoFAEnabledSafe 检查用户是否启用了2FA，并返回错误
+func IsTwoFAEnabledSafe(userId int) (bool, error) {
+	twoFA, err := GetTwoFAByUserId(userId)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", ErrTwoFAStateUnavailable, err)
+	}
+	if twoFA == nil {
+		return false, nil
+	}
+	return twoFA.IsEnabled, nil
 }
 
 // CreateTwoFA 创建2FA设置
@@ -120,15 +134,38 @@ func (t *TwoFA) ResetFailedAttempts() error {
 
 // IncrementFailedAttempts 增加失败尝试次数
 func (t *TwoFA) IncrementFailedAttempts() error {
-	t.FailedAttempts++
-
-	// 检查是否需要锁定
-	if t.FailedAttempts >= common.MaxFailAttempts {
-		lockUntil := time.Now().Add(time.Duration(common.LockoutDuration) * time.Second)
-		t.LockedUntil = &lockUntil
+	if t.Id == 0 {
+		return errors.New("2FA记录ID不能为空")
 	}
 
-	return t.Update()
+	now := time.Now()
+	lockUntil := now.Add(time.Duration(common.LockoutDuration) * time.Second)
+	result := DB.Model(&TwoFA{}).
+		Where("id = ?", t.Id).
+		Updates(map[string]any{
+			"failed_attempts": gorm.Expr("failed_attempts + 1"),
+			"locked_until": gorm.Expr(
+				"CASE WHEN failed_attempts + 1 >= ? THEN ? ELSE locked_until END",
+				common.MaxFailAttempts,
+				lockUntil,
+			),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("2FA记录不存在")
+	}
+
+	fresh, err := GetTwoFAByUserId(t.UserId)
+	if err != nil {
+		return err
+	}
+	if fresh == nil {
+		return errors.New("2FA记录不存在")
+	}
+	*t = *fresh
+	return nil
 }
 
 // IsLocked 检查账户是否被锁定
@@ -176,30 +213,46 @@ func ValidateBackupCode(userId int, code string) (bool, error) {
 	}
 
 	normalizedCode := common.NormalizeBackupCode(code)
+	now := time.Now()
 
-	// 查找未使用的备用码
-	var backupCodes []TwoFABackupCode
-	if err := DB.Where("user_id = ? AND is_used = false", userId).Find(&backupCodes).Error; err != nil {
-		return false, err
-	}
+	return validateAndConsumeBackupCodeAtomic(userId, normalizedCode, now)
+}
 
-	// 验证备用码
-	for _, bc := range backupCodes {
-		if common.ValidatePasswordAndHash(normalizedCode, bc.CodeHash) {
-			// 标记为已使用
-			now := time.Now()
-			bc.IsUsed = true
-			bc.UsedAt = &now
+func validateAndConsumeBackupCodeAtomic(userId int, normalizedCode string, now time.Time) (bool, error) {
+	var matchedID int
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var backupCodes []TwoFABackupCode
+		if err := tx.Where("user_id = ? AND is_used = false", userId).
+			Find(&backupCodes).Error; err != nil {
+			return err
+		}
 
-			if err := DB.Save(&bc).Error; err != nil {
-				return false, err
+		for _, bc := range backupCodes {
+			if !common.ValidatePasswordAndHash(normalizedCode, bc.CodeHash) {
+				continue
 			}
 
-			return true, nil
+			update := tx.Model(&TwoFABackupCode{}).
+				Where("id = ? AND is_used = false", bc.Id).
+				Updates(map[string]any{
+					"is_used": true,
+					"used_at": now,
+				})
+			if update.Error != nil {
+				return update.Error
+			}
+			if update.RowsAffected == 0 {
+				continue
+			}
+			matchedID = bc.Id
+			return nil
 		}
+		return nil
+	})
+	if err != nil {
+		return false, err
 	}
-
-	return false, nil
+	return matchedID > 0, nil
 }
 
 // GetUnusedBackupCodeCount 获取未使用的备用码数量
@@ -267,9 +320,19 @@ func (t *TwoFA) ValidateBackupCodeAndUpdateUsage(code string) (bool, error) {
 		return false, fmt.Errorf("账户已被锁定，请在%v后重试", t.LockedUntil.Format("2006-01-02 15:04:05"))
 	}
 
+	if !common.ValidateBackupCode(code) {
+		if err := t.IncrementFailedAttempts(); err != nil {
+			common.SysLog("更新2FA失败次数失败: " + err.Error())
+		}
+		return false, errors.New("验证码或备用码不正确")
+	}
+
 	// 验证备用码
 	valid, err := ValidateBackupCode(t.UserId, code)
 	if err != nil {
+		if err := t.IncrementFailedAttempts(); err != nil {
+			common.SysLog("更新2FA失败次数失败: " + err.Error())
+		}
 		return false, err
 	}
 
@@ -295,7 +358,7 @@ func (t *TwoFA) ValidateBackupCodeAndUpdateUsage(code string) (bool, error) {
 }
 
 // GetTwoFAStats 获取2FA统计信息（管理员使用）
-func GetTwoFAStats() (map[string]interface{}, error) {
+func GetTwoFAStats() (map[string]any, error) {
 	var totalUsers, enabledUsers int64
 
 	// 总用户数
@@ -313,7 +376,7 @@ func GetTwoFAStats() (map[string]interface{}, error) {
 		enabledRate = float64(enabledUsers) / float64(totalUsers) * 100
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"total_users":   totalUsers,
 		"enabled_users": enabledUsers,
 		"enabled_rate":  fmt.Sprintf("%.1f%%", enabledRate),

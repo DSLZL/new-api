@@ -97,6 +97,38 @@ func GetFingerprintSessionRetentionDays() int {
 	return parseFingerprintPositiveInt("FINGERPRINT_SESSION_RETENTION_DAYS", GetFingerprintRetentionDays())
 }
 
+func GetFingerprintActiveUserWindowHours() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ACTIVE_USER_WINDOW_HOURS", 168)
+}
+
+func GetFingerprintFullScanMaxUsers() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_FULL_SCAN_MAX_USERS", 3000)
+}
+
+func GetFingerprintFullScanMaxPairs() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_FULL_SCAN_MAX_PAIRS", 200000)
+}
+
+func GetFingerprintFullScanMaxDurationSeconds() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_FULL_SCAN_MAX_DURATION_SECONDS", 600)
+}
+
+func GetFingerprintCandidateMaxPerSource() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_CANDIDATE_MAX_PER_SOURCE", 200)
+}
+
+func GetFingerprintCandidateLowSignalMaxPerSource() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_CANDIDATE_LOW_SIGNAL_MAX_PER_SOURCE", 40)
+}
+
+func GetFingerprintCandidateMaxTotal() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_CANDIDATE_MAX_TOTAL", 1200)
+}
+
+func GetFingerprintTemporalRefreshMaxUsers() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS", 1000)
+}
+
 func GetFingerprintMaxUserAgentLength() int {
 	return parseFingerprintPositiveInt("FINGERPRINT_MAX_USER_AGENT_LENGTH", 512)
 }
