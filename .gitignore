@@ -31,3 +31,5 @@ data/
 .gopath
 .spec-workflow/
 1.md
+
+token_estimator_test.go

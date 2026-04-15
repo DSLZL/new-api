@@ -67,6 +67,7 @@ import SecureVerificationModal from '../../../common/modals/SecureVerificationMo
 import StatusCodeRiskGuardModal from './StatusCodeRiskGuardModal';
 import ChannelKeyDisplay from '../../../common/ui/ChannelKeyDisplay';
 import { useSecureVerification } from '../../../../hooks/common/useSecureVerification';
+import { parseChannelConnectionString } from '../../../../helpers/token';
 import { createApiCalls } from '../../../../services/secureVerification';
 import {
   collectInvalidStatusCodeEntries,
@@ -102,6 +103,7 @@ const REGION_EXAMPLE = {
   'claude-3-5-sonnet-20240620': 'europe-west1',
 };
 const UPSTREAM_DETECTED_MODEL_PREVIEW_LIMIT = 8;
+const ADVANCED_SETTINGS_EXPANDED_KEY = 'channel-advanced-settings-expanded';
 
 const PARAM_OVERRIDE_LEGACY_TEMPLATE = {
   temperature: 0,
@@ -206,6 +208,7 @@ const EditChannelModal = (props) => {
     allow_safety_identifier: false,
     allow_include_obfuscation: false,
     allow_inference_geo: false,
+    allow_speed: false,
     claude_beta_query: false,
     upstream_model_update_check_enabled: false,
     upstream_model_update_auto_sync_enabled: false,
@@ -398,8 +401,15 @@ const EditChannelModal = (props) => {
     [],
   );
 
+  // 剪贴板连接信息自动检测
+  const [clipboardConfig, setClipboardConfig] = useState(null);
+
   // 高级设置折叠状态
   const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false);
+  const toggleAdvancedSettings = (open) => {
+    setAdvancedSettingsOpen(open);
+    localStorage.setItem(ADVANCED_SETTINGS_EXPANDED_KEY, String(open));
+  };
   const formContainerRef = useRef(null);
   const doubaoApiClickCountRef = useRef(0);
   const initialBaseUrlRef = useRef('');
@@ -536,6 +546,39 @@ const EditChannelModal = (props) => {
     settings[key] = value;
     const settingsJson = JSON.stringify(settings);
     handleInputChange('settings', settingsJson);
+  };
+
+  const applyClipboardConfig = (config) => {
+    if (!config) return;
+    setInputs((prev) => ({
+      ...prev,
+      key: config.key,
+      base_url: config.url,
+    }));
+    if (formApiRef.current) {
+      formApiRef.current.setValue('key', config.key);
+      formApiRef.current.setValue('base_url', config.url);
+    }
+    setClipboardConfig(null);
+    showSuccess(t('连接信息已填入'));
+  };
+
+  const pasteFromClipboard = async () => {
+    if (!navigator?.clipboard?.readText) {
+      showError(t('无法读取剪贴板'));
+      return;
+    }
+    try {
+      const text = await navigator.clipboard.readText();
+      const parsed = parseChannelConnectionString(text);
+      if (parsed) {
+        applyClipboardConfig(parsed);
+      } else {
+        showInfo(t('剪贴板中未检测到连接信息'));
+      }
+    } catch {
+      showError(t('无法读取剪贴板'));
+    }
   };
 
   const isIonetLocked = isIonetChannel && isEdit;
@@ -848,6 +891,7 @@ const EditChannelModal = (props) => {
             parsedSettings.allow_include_obfuscation || false;
           data.allow_inference_geo =
             parsedSettings.allow_inference_geo || false;
+          data.allow_speed = parsedSettings.allow_speed || false;
           data.claude_beta_query = parsedSettings.claude_beta_query || false;
           data.upstream_model_update_check_enabled =
             parsedSettings.upstream_model_update_check_enabled === true;
@@ -877,6 +921,7 @@ const EditChannelModal = (props) => {
           data.allow_safety_identifier = false;
           data.allow_include_obfuscation = false;
           data.allow_inference_geo = false;
+          data.allow_speed = false;
           data.claude_beta_query = false;
           data.upstream_model_update_check_enabled = false;
           data.upstream_model_update_auto_sync_enabled = false;
@@ -894,6 +939,7 @@ const EditChannelModal = (props) => {
         data.allow_safety_identifier = false;
         data.allow_include_obfuscation = false;
         data.allow_inference_geo = false;
+        data.allow_speed = false;
         data.claude_beta_query = false;
         data.upstream_model_update_check_enabled = false;
         data.upstream_model_update_auto_sync_enabled = false;
@@ -1269,12 +1315,22 @@ const EditChannelModal = (props) => {
         loadChannel();
       } else {
         formApiRef.current?.setValues(getInitValues());
+        try {
+          navigator?.clipboard?.readText()?.then((text) => {
+            const parsed = parseChannelConnectionString(text);
+            if (parsed) {
+              setClipboardConfig(parsed);
+            }
+          }).catch(() => {});
+        } catch {}
       }
       fetchModelGroups();
       // 重置手动输入模式状态
       setUseManualInput(false);
-      // 重置高级设置折叠状态
-      setAdvancedSettingsOpen(false);
+      // 编辑模式下恢复用户偏好，创建模式一律折叠
+      setAdvancedSettingsOpen(
+        isEdit && localStorage.getItem(ADVANCED_SETTINGS_EXPANDED_KEY) === 'true'
+      );
     } else {
       // 统一的模态框关闭重置逻辑
       resetModalState();
@@ -1329,6 +1385,8 @@ const EditChannelModal = (props) => {
     setInputs(getInitValues());
     // 重置密钥显示状态
     resetKeyDisplayState();
+    // 重置剪贴板检测状态
+    setClipboardConfig(null);
   };
 
   const handleVertexUploadChange = ({ fileList }) => {
@@ -1722,6 +1780,7 @@ const EditChannelModal = (props) => {
       }
       if (localInputs.type === 14) {
         settings.allow_inference_geo = localInputs.allow_inference_geo === true;
+        settings.allow_speed = localInputs.allow_speed === true;
         settings.claude_beta_query = localInputs.claude_beta_query === true;
       }
     }
@@ -1769,6 +1828,7 @@ const EditChannelModal = (props) => {
     delete localInputs.allow_safety_identifier;
     delete localInputs.allow_include_obfuscation;
     delete localInputs.allow_inference_geo;
+    delete localInputs.allow_speed;
     delete localInputs.claude_beta_query;
     delete localInputs.upstream_model_update_check_enabled;
     delete localInputs.upstream_model_update_auto_sync_enabled;
@@ -2077,14 +2137,27 @@ const EditChannelModal = (props) => {
       <SideSheet
         placement={isEdit ? 'right' : 'left'}
         title={
-          <Space>
-            <Tag color='blue' shape='circle'>
-              {isEdit ? t('编辑') : t('新建')}
-            </Tag>
-            <Title heading={4} className='m-0'>
-              {isEdit ? t('更新渠道信息') : t('创建新的渠道')}
-            </Title>
-          </Space>
+          <div className='flex items-center justify-between w-full'>
+            <Space>
+              <Tag color='blue' shape='circle'>
+                {isEdit ? t('编辑') : t('新建')}
+              </Tag>
+              <Title heading={4} className='m-0'>
+                {isEdit ? t('更新渠道信息') : t('创建新的渠道')}
+              </Title>
+            </Space>
+            {!isEdit && (
+              <Button
+                size='small'
+                type='tertiary'
+                className='ec-dbcd0a3c01b55203 shrink-0'
+                icon={<IconBolt />}
+                onClick={pasteFromClipboard}
+              >
+                {t('从剪贴板粘贴配置')}
+              </Button>
+            )}
+          </div>
         }
         bodyStyle={{ padding: '0' }}
         visible={props.visible}
@@ -2413,6 +2486,7 @@ const EditChannelModal = (props) => {
                       </div>
                       <Form.Switch field='allow_service_tier' label={t('允许 service_tier 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_service_tier', value)} extraText={t('service_tier 字段用于指定服务层级，允许透传可能导致实际计费高于预期。默认关闭以避免额外费用')} />
                       <Form.Switch field='allow_inference_geo' label={t('允许 inference_geo 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_inference_geo', value)} extraText={t('inference_geo 字段用于控制 Claude 数据驻留推理区域。默认关闭以避免未经授权透传地域信息')} />
+                      <Form.Switch field='allow_speed' label={t('允许 speed 透传')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('allow_speed', value)} extraText={t('speed 字段用于控制 Claude 推理速度模式。默认关闭以避免意外切换到 fast 模式')} />
                     </>
                   )}
                 </div>
@@ -2446,6 +2520,34 @@ const EditChannelModal = (props) => {
             <>
             <Spin spinning={loading}>
               <div className='p-2 space-y-3' ref={formContainerRef}>
+                {!isEdit && clipboardConfig && (
+                  <Banner
+                    type='info'
+                    className='ec-dbcd0a3c01b55203'
+                    description={
+                      <div className='flex items-center justify-between gap-2'>
+                        <span>{t('检测到剪贴板中的连接信息')}</span>
+                        <div className='flex gap-1'>
+                          <Button
+                            size='small'
+                            theme='solid'
+                            type='primary'
+                            onClick={() => applyClipboardConfig(clipboardConfig)}
+                          >
+                            {t('自动填入')}
+                          </Button>
+                          <Button
+                            size='small'
+                            type='tertiary'
+                            onClick={() => setClipboardConfig(null)}
+                          >
+                            {t('忽略')}
+                          </Button>
+                        </div>
+                      </div>
+                    }
+                  />
+                )}
                 {/* Core Configuration Card - Always Visible */}
                 <Card className='!rounded-2xl shadow-sm border-0'>
                   {/* Header */}
@@ -3548,7 +3650,7 @@ const EditChannelModal = (props) => {
                 {isMobile ? (
                 <Collapse
                   activeKey={advancedSettingsOpen ? ['advanced'] : []}
-                  onChange={(keys) => setAdvancedSettingsOpen(keys.includes('advanced'))}
+                  onChange={(keys) => toggleAdvancedSettings(keys.includes('advanced'))}
                 >
                   <Collapse.Panel
                     header={
@@ -3570,7 +3672,7 @@ const EditChannelModal = (props) => {
                       backgroundColor: advancedSettingsOpen ? 'var(--semi-color-primary-light-default)' : 'var(--semi-color-fill-0)',
                       border: '1px solid var(--semi-color-fill-2)',
                     }}
-                    onClick={() => setAdvancedSettingsOpen(!advancedSettingsOpen)}
+                    onClick={() => toggleAdvancedSettings(!advancedSettingsOpen)}
                   >
                     <div className='flex items-center gap-2'>
                       <IconSetting size={16} />
