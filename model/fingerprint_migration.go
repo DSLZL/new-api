@@ -8,6 +8,13 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	fingerprintWebGLDeepHashColumn      = "webgl_deep_hash"
+	userRiskScoreUAOSConsistencyColumn  = "ua_os_consistency"
+	fingerprintLegacyWebGLDeepHashColumn = "web_gl_deep_hash"
+	userRiskScoreLegacyUAOSColumn        = "uaos_consistency"
+)
+
 var addColumnIfMissing = func(db *gorm.DB, model any, fieldName string) error {
 	return db.Migrator().AddColumn(model, fieldName)
 }
@@ -166,23 +173,23 @@ func ensureFingerprintRequiredColumns(db *gorm.DB) error {
 		return nil
 	}
 
-	if err := ensureColumnIfMissing(db, &Fingerprint{}, "user_fingerprints", "webgl_deep_hash", "WebGLDeepHash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumnIfMissing(db, &Fingerprint{}, "user_fingerprints", fingerprintWebGLDeepHashColumn, "WebGLDeepHash", []string{fingerprintLegacyWebGLDeepHashColumn}, "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumnIfMissing(db, &UserRiskScore{}, "user_risk_scores", "ua_os_consistency", "UAOSConsistency", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumnIfMissing(db, &UserRiskScore{}, "user_risk_scores", userRiskScoreUAOSConsistencyColumn, "UAOSConsistency", []string{userRiskScoreLegacyUAOSColumn}, "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName string, fieldName string, sqliteDDL string) error {
+func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName string, fieldName string, legacyColumnNames []string, sqliteDDL string) error {
 	if db == nil || model == nil || tableName == "" || columnName == "" || fieldName == "" {
 		return nil
 	}
 	if !db.Migrator().HasTable(model) {
 		return nil
 	}
-	if db.Migrator().HasColumn(model, columnName) {
+	if hasColumnByAnyName(db, model, append([]string{columnName}, legacyColumnNames...)...) {
 		return nil
 	}
 	if common.UsingSQLite {
@@ -193,6 +200,21 @@ func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName 
 		return nil
 	}
 	return addColumnIfMissing(db, model, fieldName)
+}
+
+func hasColumnByAnyName(db *gorm.DB, model any, columnNames ...string) bool {
+	if db == nil || model == nil {
+		return false
+	}
+	for _, name := range columnNames {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		if db.Migrator().HasColumn(model, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func execCreateIndexIfMissing(db *gorm.DB, sql string) *gorm.DB {

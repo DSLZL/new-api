@@ -146,6 +146,51 @@ func TestEnsureFingerprintRequiredColumns_UsesFieldNameOnNonSQLite(t *testing.T)
 
 	require.NoError(t, ensureFingerprintRequiredColumns(db))
 	require.Equal(t, []string{"WebGLDeepHash", "UAOSConsistency"}, calls)
-	require.False(t, db.Migrator().HasColumn(&Fingerprint{}, "webgl_deep_hash"))
-	require.False(t, db.Migrator().HasColumn(&UserRiskScore{}, "ua_os_consistency"))
+	require.False(t, db.Migrator().HasColumn(&Fingerprint{}, fingerprintWebGLDeepHashColumn))
+	require.False(t, db.Migrator().HasColumn(&Fingerprint{}, fingerprintLegacyWebGLDeepHashColumn))
+	require.False(t, db.Migrator().HasColumn(&UserRiskScore{}, userRiskScoreUAOSConsistencyColumn))
+	require.False(t, db.Migrator().HasColumn(&UserRiskScore{}, userRiskScoreLegacyUAOSColumn))
+}
+
+func TestEnsureFingerprintRequiredColumns_SkipsLegacyColumnsOnNonSQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`CREATE TABLE user_fingerprints (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		composite_hash text not null default '',
+		web_gl_deep_hash text not null default ''
+	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE user_risk_scores (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		risk_score real not null default 0,
+		uaos_consistency real not null default 0
+	)`).Error)
+
+	called := false
+	oldAddColumnIfMissing := addColumnIfMissing
+	addColumnIfMissing = func(db *gorm.DB, model any, fieldName string) error {
+		called = true
+		return nil
+	}
+	defer func() {
+		addColumnIfMissing = oldAddColumnIfMissing
+	}()
+
+	oldSQLite := common.UsingSQLite
+	oldMySQL := common.UsingMySQL
+	oldPostgreSQL := common.UsingPostgreSQL
+	common.UsingSQLite = false
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = true
+	defer func() {
+		common.UsingSQLite = oldSQLite
+		common.UsingMySQL = oldMySQL
+		common.UsingPostgreSQL = oldPostgreSQL
+	}()
+
+	require.NoError(t, ensureFingerprintRequiredColumns(db))
+	require.False(t, called)
 }

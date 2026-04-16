@@ -25,7 +25,7 @@ type UserRiskScore struct {
 
 	// UA维度
 	UniqueUACount   int     `json:"unique_ua_count" gorm:"default:0"`
-	UAOSConsistency float32 `json:"ua_os_consistency" gorm:"default:0"`
+	UAOSConsistency float32 `json:"ua_os_consistency" gorm:"column:ua_os_consistency;default:0"`
 
 	// 指纹稳定性
 	FingerprintChangeRate float32 `json:"fingerprint_change_rate" gorm:"default:0"`

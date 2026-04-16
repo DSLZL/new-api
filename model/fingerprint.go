@@ -47,7 +47,7 @@ type Fingerprint struct {
 	// ─── 浏览器指纹 ───
 	CanvasHash            string `json:"canvas_hash" gorm:"type:varchar(64);index;default:''"`
 	WebGLHash             string `json:"webgl_hash" gorm:"column:webgl_hash;type:varchar(64);index;default:''"`
-	WebGLDeepHash         string `json:"webgl_deep_hash" gorm:"type:varchar(64);index;default:''"`
+	WebGLDeepHash         string `json:"webgl_deep_hash" gorm:"column:webgl_deep_hash;type:varchar(64);index;default:''"`
 	ClientRectsHash       string `json:"client_rects_hash" gorm:"type:varchar(64);index;default:''"`
 	WebGLVendor           string `json:"webgl_vendor" gorm:"type:varchar(100);default:''"`
 	WebGLRenderer         string `json:"webgl_renderer" gorm:"type:varchar(200);default:''"`
@@ -453,7 +453,7 @@ type UserDeviceProfile struct {
 	DeviceKey             string    `json:"device_key" gorm:"type:varchar(64);not null;index:idx_udp_device_key;uniqueIndex:uk_udp_user_device_key,priority:2"` // 稳定设备标识
 	CanvasHash            string    `json:"canvas_hash" gorm:"type:varchar(64)"`
 	WebGLHash             string    `json:"webgl_hash" gorm:"type:varchar(64)"`
-	WebGLDeepHash         string    `json:"webgl_deep_hash" gorm:"type:varchar(64);index"`
+	WebGLDeepHash         string    `json:"webgl_deep_hash" gorm:"column:webgl_deep_hash;type:varchar(64);index"`
 	ClientRectsHash       string    `json:"client_rects_hash" gorm:"type:varchar(64);index"`
 	MediaDevicesHash      string    `json:"media_devices_hash" gorm:"type:varchar(64);index"`
 	MediaDeviceCount      string    `json:"media_device_count" gorm:"type:varchar(32)"`
