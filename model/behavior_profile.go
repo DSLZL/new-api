@@ -1,11 +1,90 @@
 package model
 
 import (
+	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const (
+	keystrokeProfileTableName = "keystroke_profiles"
+	mouseProfileTableName     = "mouse_profiles"
+)
+
+var behaviorProfileTableState = struct {
+	mu            sync.RWMutex
+	available     map[string]bool
+	missingLogged map[string]bool
+}{
+	available:     make(map[string]bool),
+	missingLogged: make(map[string]bool),
+}
+
+func ensureBehaviorProfileTables(db *gorm.DB) error {
+	if db == nil {
+		db = DB
+	}
+	if db == nil {
+		return nil
+	}
+	if err := db.AutoMigrate(&KeystrokeProfile{}, &MouseProfile{}); err != nil {
+		return err
+	}
+	markBehaviorProfileTableAvailable(keystrokeProfileTableName)
+	markBehaviorProfileTableAvailable(mouseProfileTableName)
+	return nil
+}
+
+func hasBehaviorProfileTable(db *gorm.DB, model any, tableName string) bool {
+	if db == nil {
+		db = DB
+	}
+	if db == nil {
+		return false
+	}
+
+	behaviorProfileTableState.mu.RLock()
+	if behaviorProfileTableState.available[tableName] {
+		behaviorProfileTableState.mu.RUnlock()
+		return true
+	}
+	behaviorProfileTableState.mu.RUnlock()
+
+	exists := db.Migrator().HasTable(model)
+	if exists {
+		markBehaviorProfileTableAvailable(tableName)
+		return true
+	}
+
+	shouldLog := false
+	behaviorProfileTableState.mu.Lock()
+	if !behaviorProfileTableState.missingLogged[tableName] {
+		behaviorProfileTableState.missingLogged[tableName] = true
+		shouldLog = true
+	}
+	behaviorProfileTableState.mu.Unlock()
+	if shouldLog {
+		common.SysLog("behavior profile table missing, skip query until migration completes: " + tableName)
+	}
+	return false
+}
+
+func markBehaviorProfileTableAvailable(tableName string) {
+	behaviorProfileTableState.mu.Lock()
+	defer behaviorProfileTableState.mu.Unlock()
+	behaviorProfileTableState.available[tableName] = true
+	delete(behaviorProfileTableState.missingLogged, tableName)
+}
+
+func resetBehaviorProfileTableState() {
+	behaviorProfileTableState.mu.Lock()
+	defer behaviorProfileTableState.mu.Unlock()
+	behaviorProfileTableState.available = make(map[string]bool)
+	behaviorProfileTableState.missingLogged = make(map[string]bool)
+}
 
 // KeystrokeProfile 用户打字节奏画像（仅保存统计特征，不保存按键内容）。
 type KeystrokeProfile struct {
@@ -26,7 +105,7 @@ type KeystrokeProfile struct {
 }
 
 func (KeystrokeProfile) TableName() string {
-	return "keystroke_profiles"
+	return keystrokeProfileTableName
 }
 
 func UpsertKeystrokeProfile(profile *KeystrokeProfile) error {
@@ -35,6 +114,9 @@ func UpsertKeystrokeProfile(profile *KeystrokeProfile) error {
 
 func upsertKeystrokeProfileWithDB(db *gorm.DB, profile *KeystrokeProfile) error {
 	if profile == nil || profile.UserID <= 0 {
+		return nil
+	}
+	if !hasBehaviorProfileTable(db, &KeystrokeProfile{}, keystrokeProfileTableName) {
 		return nil
 	}
 
@@ -73,6 +155,9 @@ func GetLatestKeystrokeProfile(userID int) *KeystrokeProfile {
 	if userID <= 0 {
 		return nil
 	}
+	if !hasBehaviorProfileTable(DB, &KeystrokeProfile{}, keystrokeProfileTableName) {
+		return nil
+	}
 	var profile KeystrokeProfile
 	result := DB.Where("user_id = ?", userID).
 		Order("updated_at DESC").
@@ -106,7 +191,7 @@ type MouseProfile struct {
 }
 
 func (MouseProfile) TableName() string {
-	return "mouse_profiles"
+	return mouseProfileTableName
 }
 
 func UpsertMouseProfile(profile *MouseProfile) error {
@@ -115,6 +200,9 @@ func UpsertMouseProfile(profile *MouseProfile) error {
 
 func upsertMouseProfileWithDB(db *gorm.DB, profile *MouseProfile) error {
 	if profile == nil || profile.UserID <= 0 {
+		return nil
+	}
+	if !hasBehaviorProfileTable(db, &MouseProfile{}, mouseProfileTableName) {
 		return nil
 	}
 
@@ -175,6 +263,9 @@ func GetLatestMouseProfile(userID int) *MouseProfile {
 	if userID <= 0 {
 		return nil
 	}
+	if !hasBehaviorProfileTable(DB, &MouseProfile{}, mouseProfileTableName) {
+		return nil
+	}
 	var profile MouseProfile
 	result := DB.Where("user_id = ?", userID).
 		Order("updated_at DESC").
@@ -187,6 +278,9 @@ func GetLatestMouseProfile(userID int) *MouseProfile {
 }
 
 func DeleteOldKeystrokeProfiles(before time.Time) (int64, error) {
+	if !hasBehaviorProfileTable(DB, &KeystrokeProfile{}, keystrokeProfileTableName) {
+		return 0, nil
+	}
 	result := DB.Where("updated_at < ?", before).Delete(&KeystrokeProfile{})
 	if result.Error != nil {
 		return 0, result.Error
@@ -195,6 +289,9 @@ func DeleteOldKeystrokeProfiles(before time.Time) (int64, error) {
 }
 
 func DeleteOldMouseProfiles(before time.Time) (int64, error) {
+	if !hasBehaviorProfileTable(DB, &MouseProfile{}, mouseProfileTableName) {
+		return 0, nil
+	}
 	result := DB.Where("updated_at < ?", before).Delete(&MouseProfile{})
 	if result.Error != nil {
 		return 0, result.Error

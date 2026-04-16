@@ -9,20 +9,20 @@ import (
 )
 
 // RunFingerprintMigration 执行指纹相关表的自动迁移
-func RunFingerprintMigration() {
+func RunFingerprintMigration() error {
 	if !common.FingerprintEnabled {
-		return
+		return nil
 	}
 
 	common.SysLog("running fingerprint database migration...")
 
 	if err := migrateFingerprintETagColumn(DB); err != nil {
 		common.SysError("fingerprint etag column migration failed: " + err.Error())
-		return
+		return err
 	}
 	if err := ensureFingerprintRequiredColumns(DB); err != nil {
 		common.SysError("fingerprint required columns migration failed: " + err.Error())
-		return
+		return err
 	}
 
 	err := DB.AutoMigrate(
@@ -39,15 +39,15 @@ func RunFingerprintMigration() {
 	)
 	if err != nil {
 		common.SysError("fingerprint migration failed: " + err.Error())
-		return
+		return err
 	}
 	if err := EnsureUserSessionUniqueIndex(DB); err != nil {
 		common.SysError("fingerprint session unique index migration failed: " + err.Error())
-		return
+		return err
 	}
 	if err := EnsureAccountLinkUniqueIndex(DB); err != nil {
 		common.SysError("fingerprint account-link unique index migration failed: " + err.Error())
-		return
+		return err
 	}
 
 	if common.UsingPostgreSQL {
@@ -133,6 +133,7 @@ func RunFingerprintMigration() {
 	}
 
 	common.SysLog("fingerprint database migration completed")
+	return nil
 }
 
 func migrateFingerprintETagColumn(db *gorm.DB) error {

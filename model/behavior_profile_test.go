@@ -11,6 +11,7 @@ import (
 
 func initBehaviorProfileTestDB(t *testing.T) {
 	t.Helper()
+	resetBehaviorProfileTableState()
 	oldDB := DB
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
@@ -21,9 +22,49 @@ func initBehaviorProfileTestDB(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&KeystrokeProfile{}, &MouseProfile{}))
 	DB = db
 	t.Cleanup(func() {
+		resetBehaviorProfileTableState()
 		DB = oldDB
 		_ = sqlDB.Close()
 	})
+}
+
+func initBehaviorProfileTestDBWithoutTables(t *testing.T) {
+	t.Helper()
+	resetBehaviorProfileTableState()
+	oldDB := DB
+	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	DB = db
+	t.Cleanup(func() {
+		resetBehaviorProfileTableState()
+		DB = oldDB
+		_ = sqlDB.Close()
+	})
+}
+
+func TestEnsureBehaviorProfileTables_CreatesTablesWithoutFingerprintMigration(t *testing.T) {
+	initBehaviorProfileTestDBWithoutTables(t)
+
+	require.False(t, DB.Migrator().HasTable(&KeystrokeProfile{}))
+	require.False(t, DB.Migrator().HasTable(&MouseProfile{}))
+
+	require.NoError(t, ensureBehaviorProfileTables(DB))
+
+	require.True(t, DB.Migrator().HasTable(&KeystrokeProfile{}))
+	require.True(t, DB.Migrator().HasTable(&MouseProfile{}))
+}
+
+func TestGetLatestBehaviorProfiles_ReturnsNilWhenTableMissing(t *testing.T) {
+	initBehaviorProfileTestDBWithoutTables(t)
+
+	require.Nil(t, GetLatestKeystrokeProfile(1001))
+	require.Nil(t, GetLatestMouseProfile(1001))
+	require.Nil(t, GetLatestKeystrokeProfile(1001))
+	require.Nil(t, GetLatestMouseProfile(1001))
 }
 
 func TestUpsertKeystrokeProfile_CreateAndUpdate(t *testing.T) {
@@ -250,23 +291,26 @@ func TestDeleteOldBehaviorProfiles_ByUpdatedAt(t *testing.T) {
 	require.Equal(t, 902, remainingMouse.UserID)
 }
 
-func TestDeleteOldBehaviorProfiles_ReturnsDBError(t *testing.T) {
-	initBehaviorProfileTestDB(t)
+func TestDeleteOldBehaviorProfiles_ReturnsZeroWhenTableMissing(t *testing.T) {
+	initBehaviorProfileTestDBWithoutTables(t)
 
-	brokenDB := DB.Session(&gorm.Session{NewDB: true})
-	oldDB := DB
-	DB = brokenDB
-	t.Cleanup(func() {
-		DB = oldDB
-	})
-
-	sqlDB, err := brokenDB.DB()
+	deletedKey, err := DeleteOldKeystrokeProfiles(time.Now().UTC())
 	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
+	require.Zero(t, deletedKey)
 
-	_, err = DeleteOldKeystrokeProfiles(time.Now().UTC())
-	require.Error(t, err)
+	deletedMouse, err := DeleteOldMouseProfiles(time.Now().UTC())
+	require.NoError(t, err)
+	require.Zero(t, deletedMouse)
+}
 
-	_, err = DeleteOldMouseProfiles(time.Now().UTC())
-	require.Error(t, err)
+func TestHasBehaviorProfileTable_CachesMissingState(t *testing.T) {
+	initBehaviorProfileTestDBWithoutTables(t)
+
+	require.False(t, hasBehaviorProfileTable(DB, &KeystrokeProfile{}, keystrokeProfileTableName))
+	require.False(t, hasBehaviorProfileTable(DB, &KeystrokeProfile{}, keystrokeProfileTableName))
+
+	behaviorProfileTableState.mu.RLock()
+	defer behaviorProfileTableState.mu.RUnlock()
+	require.False(t, behaviorProfileTableState.available[keystrokeProfileTableName])
+	require.True(t, behaviorProfileTableState.missingLogged[keystrokeProfileTableName])
 }
