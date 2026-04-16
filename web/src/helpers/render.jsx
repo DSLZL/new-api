@@ -76,6 +76,7 @@ import {
   Server,
   CalendarClock,
 } from 'lucide-react';
+import { FaLinkedinIn } from 'react-icons/fa';
 import {
   SiAtlassian,
   SiAuth0,
@@ -89,7 +90,6 @@ import {
   SiGitlab,
   SiGoogle,
   SiKeycloak,
-  SiLinkedin,
   SiNextcloud,
   SiNotion,
   SiOkta,
@@ -504,7 +504,7 @@ const oauthProviderIconMap = {
   google: SiGoogle,
   discord: SiDiscord,
   facebook: SiFacebook,
-  linkedin: SiLinkedin,
+  linkedin: FaLinkedinIn,
   x: SiX,
   twitter: SiX,
   slack: SiSlack,
@@ -571,6 +571,12 @@ export function getOAuthProviderIcon(iconName, size = 20) {
     );
   }
 
+  const key = normalizeOAuthIconKey(raw);
+  const IconComp = oauthProviderIconMap[key];
+  if (IconComp) {
+    return <IconComp size={iconSize} />;
+  }
+
   if (isSimpleEmoji(raw)) {
     return (
       <span
@@ -586,12 +592,6 @@ export function getOAuthProviderIcon(iconName, size = 20) {
         {raw}
       </span>
     );
-  }
-
-  const key = normalizeOAuthIconKey(raw);
-  const IconComp = oauthProviderIconMap[key];
-  if (IconComp) {
-    return <IconComp size={iconSize} />;
   }
 
   return (
@@ -1622,10 +1622,9 @@ function renderPriceSimpleCore({
 
 export function renderTaskBillingProcess(other, content) {
   if (other?.task_id != null) {
-    return renderBillingArticle(
-      [content].filter(Boolean),
-      { showReferenceNote: false },
-    );
+    return renderBillingArticle([content].filter(Boolean), {
+      showReferenceNote: false,
+    });
   }
   return renderBillingArticle([
     buildBillingText('任务预扣费（将在任务完成后按实际token重算）'),
