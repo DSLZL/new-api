@@ -307,9 +307,20 @@ func QueryUserAssociationsWithOptions(
 
 	// ──────────────────────────────────────────────────────────
 	// 5. 计算关联度
-	//    ★ 改动: 候选用户的指纹也增加设备档案兜底
+	//    ★ 改动: 先粗算候选结果，再对最终结果补充 user/link/sharedIPs
 	// ──────────────────────────────────────────────────────────
-	associations := make([]AssociationItem, 0)
+	type associationCandidateResult struct {
+		CandidateUserID    int
+		Confidence         float64
+		Tier               string
+		Explanation        string
+		MatchedDimensions  []string
+		RiskLevel          string
+		MatchDimensions    int
+		TotalDimensions    int
+		Details            []DimensionMatch
+	}
+	candidateResults := make([]associationCandidateResult, 0, len(candidateSet))
 
 	for candidateUID := range candidateSet {
 		if candidateUserID > 0 && candidateUID != candidateUserID {
@@ -351,8 +362,8 @@ func QueryUserAssociationsWithOptions(
 			continue
 		}
 
-		item := AssociationItem{
-			User:              getUserBrief(candidateUID),
+		candidateResults = append(candidateResults, associationCandidateResult{
+			CandidateUserID:   candidateUID,
 			Confidence:        bestConf,
 			Tier:              bestTier,
 			Explanation:       bestExplanation,
@@ -360,47 +371,67 @@ func QueryUserAssociationsWithOptions(
 			RiskLevel:         confidenceToRiskLevel(bestConf),
 			MatchDimensions:   bestMatchDims,
 			TotalDimensions:   bestTotalDims,
+			Details:           bestDetails,
+		})
+	}
+
+	// ──────────────────────────────────────────────────────────
+	// 6. 排序、过滤、截断后再补充重字段
+	// ──────────────────────────────────────────────────────────
+	sort.Slice(candidateResults, func(i, j int) bool {
+		return candidateResults[i].Confidence > candidateResults[j].Confidence
+	})
+
+	filteredCandidates := make([]associationCandidateResult, 0, len(candidateResults))
+	for _, candidate := range candidateResults {
+		if candidate.Confidence >= normalizedMinConfidence {
+			filteredCandidates = append(filteredCandidates, candidate)
+		}
+	}
+	if len(filteredCandidates) > normalizedLimit {
+		filteredCandidates = filteredCandidates[:normalizedLimit]
+	}
+
+	finalCandidateUserIDs := make([]int, 0, len(filteredCandidates))
+	for _, candidate := range filteredCandidates {
+		finalCandidateUserIDs = append(finalCandidateUserIDs, candidate.CandidateUserID)
+	}
+	candidateUserBriefs := getUserBriefs(finalCandidateUserIDs)
+	linksByPeer := model.GetLinksByUserAndCandidates(targetUserID, finalCandidateUserIDs)
+
+	associations := make([]AssociationItem, 0, len(filteredCandidates))
+	for _, candidate := range filteredCandidates {
+		item := AssociationItem{
+			User:              candidateUserBriefs[candidate.CandidateUserID],
+			Confidence:        candidate.Confidence,
+			Tier:              candidate.Tier,
+			Explanation:       candidate.Explanation,
+			MatchedDimensions: candidate.MatchedDimensions,
+			RiskLevel:         candidate.RiskLevel,
+			MatchDimensions:   candidate.MatchDimensions,
+			TotalDimensions:   candidate.TotalDimensions,
+		}
+		if item.User.ID == 0 {
+			item.User = UserBrief{ID: candidate.CandidateUserID}
 		}
 		if includeDetails {
-			item.Details = bestDetails
+			item.Details = candidate.Details
 		}
 		if includeSharedIPs {
-			item.SharedIPs = GetSharedIPs(targetUserID, candidateUID)
+			item.SharedIPs = GetSharedIPs(targetUserID, candidate.CandidateUserID)
 		}
-
-		// 检查是否已有 Link 记录
-		link := model.GetLinkByUsers(targetUserID, candidateUID)
-		if link != nil {
+		if link := linksByPeer[candidate.CandidateUserID]; link != nil {
 			item.ExistingLink = &ExistingLinkInfo{
 				LinkID: link.ID,
 				Status: link.Status,
 			}
 		}
-
 		associations = append(associations, item)
-	}
-
-	// ──────────────────────────────────────────────────────────
-	// 6. 排序并缓存
-	//    ★ 改动: selectedFPID == 0 → baseFingerprint == nil
-	// ──────────────────────────────────────────────────────────
-	sort.Slice(associations, func(i, j int) bool {
-		return associations[i].Confidence > associations[j].Confidence
-	})
-
-	filtered := make([]AssociationItem, 0)
-	for _, a := range associations {
-		if a.Confidence >= normalizedMinConfidence {
-			filtered = append(filtered, a)
-		}
-	}
-	if len(filtered) > normalizedLimit {
-		filtered = filtered[:normalizedLimit]
 	}
 
 	fullResult := &AssociationResult{
 		TargetUser:      getUserBrief(targetUserID),
-		Associations:    filtered,
+		Associations:    associations,
 		AnalyzedAt:      time.Now(),
 		CandidatesFound: len(candidateSet),
 		TimeCostMs:      time.Since(startTime).Milliseconds(),
@@ -420,22 +451,57 @@ func QueryUserAssociationsWithOptions(
 	return fullResult, nil
 }
 
+func getUserBriefs(userIDs []int) map[int]UserBrief {
+	briefs := make(map[int]UserBrief)
+	if len(userIDs) == 0 || model.DB == nil {
+		return briefs
+	}
+
+	uniqueIDs := make([]int, 0, len(userIDs))
+	seen := make(map[int]struct{}, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			continue
+		}
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		uniqueIDs = append(uniqueIDs, userID)
+	}
+	if len(uniqueIDs) == 0 {
+		return briefs
+	}
+
+	var users []model.User
+	if err := model.DB.Where("id IN ?", uniqueIDs).Find(&users).Error; err != nil {
+		return briefs
+	}
+	for _, user := range users {
+		briefs[user.Id] = UserBrief{
+			ID:          user.Id,
+			Username:    user.Username,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
+			Role:        user.Role,
+			Status:      user.Status,
+			Quota:       user.Quota,
+			UsedQuota:   user.UsedQuota,
+			Group:       user.Group,
+		}
+	}
+	return briefs
+}
+
 func getUserBrief(userID int) UserBrief {
-	var user model.User
-	if err := model.DB.First(&user, userID).Error; err != nil {
+	if userID <= 0 {
+		return UserBrief{}
+	}
+	brief, ok := getUserBriefs([]int{userID})[userID]
+	if !ok {
 		return UserBrief{ID: userID}
 	}
-	return UserBrief{
-		ID:          user.Id,
-		Username:    user.Username,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
-		Status:      user.Status,
-		Quota:       user.Quota,
-		UsedQuota:   user.UsedQuota,
-		Group:       user.Group,
-	}
+	return brief
 }
 
 func confidenceToRiskLevel(conf float64) string {

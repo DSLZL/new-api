@@ -14,7 +14,7 @@ import (
 
 func initAccountLinkTestDB(t *testing.T) {
 	t.Helper()
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
@@ -98,7 +98,7 @@ func TestUpsertLink_KeepsHigherConfidenceWhenWeakerEvidenceArrives(t *testing.T)
 }
 
 func TestEnsureAccountLinkUniqueIndex_NormalizesLegacyRows(t *testing.T) {
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&AccountLink{}))
@@ -149,7 +149,7 @@ func TestEnsureAccountLinkUniqueIndex_NormalizesLegacyRows(t *testing.T) {
 }
 
 func TestEnsureAccountLinkUniqueIndex_PreservesUnknownLegacyStatus(t *testing.T) {
-	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&AccountLink{}))
@@ -170,4 +170,48 @@ func TestEnsureAccountLinkUniqueIndex_PreservesUnknownLegacyStatus(t *testing.T)
 	require.NotNil(t, link)
 	require.Equal(t, "legacy_blocked", link.Status)
 	require.Equal(t, "keep custom status", link.ReviewNote)
+}
+
+func TestGetLinksByUserAndCandidates_BatchesAndMapsByPeer(t *testing.T) {
+	initAccountLinkTestDB(t)
+
+	require.NoError(t, DB.Create(&AccountLink{
+		UserIDA:      50,
+		UserIDB:      60,
+		Confidence:   0.91,
+		Status:       AccountLinkStatusConfirmed,
+		MatchDetails: `[{"dimension":"device_key","score":0.91}]`,
+	}).Error)
+	require.NoError(t, DB.Create(&AccountLink{
+		UserIDA:      60,
+		UserIDB:      50,
+		Confidence:   0.33,
+		Status:       AccountLinkStatusPending,
+		MatchDetails: `[{"dimension":"ip_exact","score":0.33}]`,
+	}).Error)
+	require.NoError(t, DB.Create(&AccountLink{
+		UserIDA:      70,
+		UserIDB:      50,
+		Confidence:   0.72,
+		Status:       AccountLinkStatusAutoConfirmed,
+		MatchDetails: `[{"dimension":"canvas","score":0.72}]`,
+	}).Error)
+	require.NoError(t, DB.Create(&AccountLink{
+		UserIDA:      91,
+		UserIDB:      92,
+		Confidence:   0.88,
+		Status:       AccountLinkStatusConfirmed,
+		MatchDetails: `[{"dimension":"noise","score":0.88}]`,
+	}).Error)
+
+	links := GetLinksByUserAndCandidates(50, []int{-1, 0, 50, 60, 60, 70, 80})
+	require.Len(t, links, 2)
+	require.Contains(t, links, 60)
+	require.Contains(t, links, 70)
+	require.NotContains(t, links, 80)
+
+	require.Equal(t, AccountLinkStatusConfirmed, links[60].Status)
+	require.InDelta(t, 0.91, links[60].Confidence, 0.0001)
+	require.Equal(t, AccountLinkStatusAutoConfirmed, links[70].Status)
+	require.InDelta(t, 0.72, links[70].Confidence, 0.0001)
 }

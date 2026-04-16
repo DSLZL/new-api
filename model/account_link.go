@@ -67,11 +67,79 @@ func GetLinkByUsers(userA, userB int) *AccountLink {
 	return FindExistingLink(userA, userB)
 }
 
+func GetLinksByUserAndCandidates(userID int, candidateUserIDs []int) map[int]*AccountLink {
+	linksByPeer := make(map[int]*AccountLink)
+	if userID <= 0 || len(candidateUserIDs) == 0 || DB == nil {
+		return linksByPeer
+	}
+
+	filteredCandidateIDs := uniquePositiveUserIDs(candidateUserIDs, userID)
+	if len(filteredCandidateIDs) == 0 {
+		return linksByPeer
+	}
+
+	var links []AccountLink
+	if err := DB.Where(
+		"(user_id_a = ? AND user_id_b IN ?) OR (user_id_b = ? AND user_id_a IN ?)",
+		userID,
+		filteredCandidateIDs,
+		userID,
+		filteredCandidateIDs,
+	).Order("id ASC").Find(&links).Error; err != nil {
+		return linksByPeer
+	}
+
+	for i := range links {
+		link := links[i]
+		peerID := 0
+		switch {
+		case link.UserIDA == userID:
+			peerID = link.UserIDB
+		case link.UserIDB == userID:
+			peerID = link.UserIDA
+		default:
+			continue
+		}
+		if peerID <= 0 {
+			continue
+		}
+		if _, exists := linksByPeer[peerID]; exists {
+			continue
+		}
+		copyLink := link
+		linksByPeer[peerID] = &copyLink
+	}
+
+	return linksByPeer
+}
+
+func uniquePositiveUserIDs(userIDs []int, excludedUserID int) []int {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(userIDs))
+	filtered := make([]int, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 || userID == excludedUserID {
+			continue
+		}
+		if _, exists := seen[userID]; exists {
+			continue
+		}
+		seen[userID] = struct{}{}
+		filtered = append(filtered, userID)
+	}
+	return filtered
+}
+
 func FindExistingLink(userA, userB int) *AccountLink {
+	if DB == nil || userA <= 0 || userB <= 0 {
+		return nil
+	}
 	a, b := NormalizePair(userA, userB)
 	var link AccountLink
-	result := DB.Where("user_id_a = ? AND user_id_b = ?", a, b).First(&link)
-	if result.Error != nil {
+	result := DB.Where("user_id_a = ? AND user_id_b = ?", a, b).Order("id ASC").Limit(1).Find(&link)
+	if result.Error != nil || result.RowsAffected == 0 {
 		return nil
 	}
 	return &link
