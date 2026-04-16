@@ -3,6 +3,7 @@ package model
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -89,7 +90,62 @@ func TestEnsureFingerprintRequiredColumns_AddsMissingColumnsOnSQLite(t *testing.
 		risk_score real not null default 0
 	)`).Error)
 
+	oldSQLite := common.UsingSQLite
+	oldMySQL := common.UsingMySQL
+	oldPostgreSQL := common.UsingPostgreSQL
+	common.UsingSQLite = true
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = false
+	defer func() {
+		common.UsingSQLite = oldSQLite
+		common.UsingMySQL = oldMySQL
+		common.UsingPostgreSQL = oldPostgreSQL
+	}()
+
 	require.NoError(t, ensureFingerprintRequiredColumns(db))
 	require.True(t, db.Migrator().HasColumn(&Fingerprint{}, "webgl_deep_hash"))
 	require.True(t, db.Migrator().HasColumn(&UserRiskScore{}, "ua_os_consistency"))
+}
+
+func TestEnsureFingerprintRequiredColumns_UsesFieldNameOnNonSQLite(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec(`CREATE TABLE user_fingerprints (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		composite_hash text not null default ''
+	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE user_risk_scores (
+		id integer primary key autoincrement,
+		user_id integer not null,
+		risk_score real not null default 0
+	)`).Error)
+
+	calls := make([]string, 0, 2)
+	oldAddColumnIfMissing := addColumnIfMissing
+	addColumnIfMissing = func(db *gorm.DB, model any, fieldName string) error {
+		calls = append(calls, fieldName)
+		return nil
+	}
+	defer func() {
+		addColumnIfMissing = oldAddColumnIfMissing
+	}()
+
+	oldSQLite := common.UsingSQLite
+	oldMySQL := common.UsingMySQL
+	oldPostgreSQL := common.UsingPostgreSQL
+	common.UsingSQLite = false
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = true
+	defer func() {
+		common.UsingSQLite = oldSQLite
+		common.UsingMySQL = oldMySQL
+		common.UsingPostgreSQL = oldPostgreSQL
+	}()
+
+	require.NoError(t, ensureFingerprintRequiredColumns(db))
+	require.Equal(t, []string{"WebGLDeepHash", "UAOSConsistency"}, calls)
+	require.False(t, db.Migrator().HasColumn(&Fingerprint{}, "webgl_deep_hash"))
+	require.False(t, db.Migrator().HasColumn(&UserRiskScore{}, "ua_os_consistency"))
 }

@@ -8,6 +8,10 @@ import (
 	"gorm.io/gorm"
 )
 
+var addColumnIfMissing = func(db *gorm.DB, model any, fieldName string) error {
+	return db.Migrator().AddColumn(model, fieldName)
+}
+
 // RunFingerprintMigration 执行指纹相关表的自动迁移
 func RunFingerprintMigration() error {
 	if !common.FingerprintEnabled {
@@ -162,17 +166,17 @@ func ensureFingerprintRequiredColumns(db *gorm.DB) error {
 		return nil
 	}
 
-	if err := ensureColumnIfMissing(db, &Fingerprint{}, "user_fingerprints", "webgl_deep_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := ensureColumnIfMissing(db, &Fingerprint{}, "user_fingerprints", "webgl_deep_hash", "WebGLDeepHash", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := ensureColumnIfMissing(db, &UserRiskScore{}, "user_risk_scores", "ua_os_consistency", "REAL NOT NULL DEFAULT 0"); err != nil {
+	if err := ensureColumnIfMissing(db, &UserRiskScore{}, "user_risk_scores", "ua_os_consistency", "UAOSConsistency", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName string, sqliteDDL string) error {
-	if db == nil || model == nil || tableName == "" || columnName == "" {
+func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName string, fieldName string, sqliteDDL string) error {
+	if db == nil || model == nil || tableName == "" || columnName == "" || fieldName == "" {
 		return nil
 	}
 	if !db.Migrator().HasTable(model) {
@@ -188,7 +192,7 @@ func ensureColumnIfMissing(db *gorm.DB, model any, tableName string, columnName 
 		}
 		return nil
 	}
-	return db.Migrator().AddColumn(model, columnName)
+	return addColumnIfMissing(db, model, fieldName)
 }
 
 func execCreateIndexIfMissing(db *gorm.DB, sql string) *gorm.DB {
