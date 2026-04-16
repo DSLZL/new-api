@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	fingerprintWebGLDeepHashColumn      = "webgl_deep_hash"
-	userRiskScoreUAOSConsistencyColumn  = "ua_os_consistency"
+	fingerprintWebGLDeepHashColumn       = "webgl_deep_hash"
+	userRiskScoreUAOSConsistencyColumn   = "ua_os_consistency"
 	fingerprintLegacyWebGLDeepHashColumn = "web_gl_deep_hash"
 	userRiskScoreLegacyUAOSColumn        = "uaos_consistency"
+	userDeviceProfileUniqueIndexName     = "uk_udp_user_device_key"
 )
 
 var addColumnIfMissing = func(db *gorm.DB, model any, fieldName string) error {
@@ -29,6 +30,10 @@ func RunFingerprintMigration() error {
 
 	if err := migrateFingerprintETagColumn(DB); err != nil {
 		common.SysError("fingerprint etag column migration failed: " + err.Error())
+		return err
+	}
+	if err := migrateFingerprintLegacyColumns(DB); err != nil {
+		common.SysError("fingerprint legacy column migration failed: " + err.Error())
 		return err
 	}
 	if err := ensureFingerprintRequiredColumns(DB); err != nil {
@@ -50,6 +55,10 @@ func RunFingerprintMigration() error {
 	)
 	if err != nil {
 		common.SysError("fingerprint migration failed: " + err.Error())
+		return err
+	}
+	if err := EnsureUserDeviceProfileUniqueIndex(DB); err != nil {
+		common.SysError("fingerprint device-profile unique index migration failed: " + err.Error())
 		return err
 	}
 	if err := EnsureUserSessionUniqueIndex(DB); err != nil {
@@ -96,7 +105,6 @@ func RunFingerprintMigration() error {
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_ipua_user_ip_ua ON ip_ua_history(user_id, ip_address, ua_browser, ua_os)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_whitelist_pair ON link_whitelist(user_id_a, user_id_b)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_link_pair ON account_links(user_id_a, user_id_b)`,
-			`CREATE UNIQUE INDEX IF NOT EXISTS uk_udp_user_device_key ON user_device_profiles(user_id, device_key)`,
 			`CREATE UNIQUE INDEX IF NOT EXISTS uk_utp_user_date ON user_temporal_profiles(user_id, profile_date)`,
 		}
 		for _, sql := range pgIndexes {
@@ -133,7 +141,6 @@ func RunFingerprintMigration() error {
 			`CREATE INDEX idx_us_device_key ON user_sessions(device_key)`,
 			`CREATE UNIQUE INDEX uk_whitelist_pair ON link_whitelist(user_id_a, user_id_b)`,
 			`CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)`,
-			`CREATE UNIQUE INDEX uk_udp_user_device_key ON user_device_profiles(user_id, device_key)`,
 			`CREATE UNIQUE INDEX uk_utp_user_date ON user_temporal_profiles(user_id, profile_date)`,
 		}
 		for _, sql := range mysqlIndexes {
@@ -163,6 +170,52 @@ func migrateFingerprintETagColumn(db *gorm.DB) error {
 		return db.Migrator().RenameColumn(&Fingerprint{}, "e_tag_id", "etag_id")
 	}
 	return db.Exec(`UPDATE user_fingerprints SET etag_id = e_tag_id WHERE (etag_id = '' OR etag_id IS NULL) AND e_tag_id != ''`).Error
+}
+
+func migrateFingerprintLegacyColumns(db *gorm.DB) error {
+	if db == nil {
+		db = DB
+	}
+	if db == nil {
+		return nil
+	}
+	if err := migrateLegacyColumnIfNeeded(db, &Fingerprint{}, "user_fingerprints", fingerprintLegacyWebGLDeepHashColumn, fingerprintWebGLDeepHashColumn); err != nil {
+		return err
+	}
+	if err := migrateLegacyColumnIfNeeded(db, &UserRiskScore{}, "user_risk_scores", userRiskScoreLegacyUAOSColumn, userRiskScoreUAOSConsistencyColumn); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrateLegacyColumnIfNeeded(db *gorm.DB, model any, tableName string, legacyColumnName string, targetColumnName string) error {
+	if db == nil || model == nil || tableName == "" || legacyColumnName == "" || targetColumnName == "" {
+		return nil
+	}
+	if !db.Migrator().HasTable(model) || !db.Migrator().HasColumn(model, legacyColumnName) {
+		return nil
+	}
+	if db.Migrator().HasColumn(model, targetColumnName) {
+		return db.Exec(buildLegacyColumnBackfillSQL(tableName, legacyColumnName, targetColumnName)).Error
+	}
+	return db.Migrator().RenameColumn(model, legacyColumnName, targetColumnName)
+}
+
+func buildLegacyColumnBackfillSQL(tableName string, legacyColumnName string, targetColumnName string) string {
+	targetTable := quoteIdentifier(tableName)
+	targetColumn := quoteIdentifier(targetColumnName)
+	legacyColumn := quoteIdentifier(legacyColumnName)
+	if targetColumnName == userRiskScoreUAOSConsistencyColumn {
+		return fmt.Sprintf("UPDATE %s SET %s = %s WHERE (%s = 0 OR %s IS NULL) AND %s != 0", targetTable, targetColumn, legacyColumn, targetColumn, targetColumn, legacyColumn)
+	}
+	return fmt.Sprintf("UPDATE %s SET %s = %s WHERE (%s = '' OR %s IS NULL) AND %s != ''", targetTable, targetColumn, legacyColumn, targetColumn, targetColumn, legacyColumn)
+}
+
+func quoteIdentifier(identifier string) string {
+	if common.UsingPostgreSQL {
+		return `"` + identifier + `"`
+	}
+	return "`" + identifier + "`"
 }
 
 func ensureFingerprintRequiredColumns(db *gorm.DB) error {
@@ -215,6 +268,203 @@ func hasColumnByAnyName(db *gorm.DB, model any, columnNames ...string) bool {
 		}
 	}
 	return false
+}
+
+func EnsureUserDeviceProfileUniqueIndex(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	if db.Migrator().HasIndex(&UserDeviceProfile{}, userDeviceProfileUniqueIndexName) {
+		return nil
+	}
+	if err := normalizeUserDeviceProfilesForUniqueIndex(db); err != nil {
+		return err
+	}
+	return db.Exec("CREATE UNIQUE INDEX uk_udp_user_device_key ON user_device_profiles(user_id, device_key)").Error
+}
+
+func normalizeUserDeviceProfilesForUniqueIndex(db *gorm.DB) error {
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	var profiles []UserDeviceProfile
+	if err := tx.Order("id ASC").Find(&profiles).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	type userDeviceProfileGroup struct {
+		merged UserDeviceProfile
+		ids    []int64
+	}
+	groups := make(map[string]userDeviceProfileGroup, len(profiles))
+	for _, profile := range profiles {
+		key := fmt.Sprintf("%d:%s", profile.UserID, profile.DeviceKey)
+		group, ok := groups[key]
+		if !ok {
+			groups[key] = userDeviceProfileGroup{merged: profile, ids: []int64{profile.ID}}
+			continue
+		}
+		group.merged = mergeUserDeviceProfileRows(group.merged, profile)
+		group.ids = append(group.ids, profile.ID)
+		groups[key] = group
+	}
+
+	for _, group := range groups {
+		deleteIDs := make([]int64, 0, len(group.ids)-1)
+		for _, id := range group.ids {
+			if id != group.merged.ID {
+				deleteIDs = append(deleteIDs, id)
+			}
+		}
+		if len(deleteIDs) > 0 {
+			if err := tx.Where("id IN ?", deleteIDs).Delete(&UserDeviceProfile{}).Error; err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
+		mergedUpdate := UserDeviceProfile{
+			CanvasHash:            group.merged.CanvasHash,
+			WebGLHash:             group.merged.WebGLHash,
+			WebGLDeepHash:         group.merged.WebGLDeepHash,
+			ClientRectsHash:       group.merged.ClientRectsHash,
+			MediaDevicesHash:      group.merged.MediaDevicesHash,
+			MediaDeviceCount:      group.merged.MediaDeviceCount,
+			MediaDeviceGroupHash:  group.merged.MediaDeviceGroupHash,
+			MediaDeviceTotal:      group.merged.MediaDeviceTotal,
+			SpeechVoicesHash:      group.merged.SpeechVoicesHash,
+			SpeechVoiceCount:      group.merged.SpeechVoiceCount,
+			SpeechLocalVoiceCount: group.merged.SpeechLocalVoiceCount,
+			AudioHash:             group.merged.AudioHash,
+			FontsHash:             group.merged.FontsHash,
+			LocalDeviceID:         group.merged.LocalDeviceID,
+			CompositeHash:         group.merged.CompositeHash,
+			HTTPHeaderHash:        group.merged.HTTPHeaderHash,
+			UABrowser:             group.merged.UABrowser,
+			UAOS:                  group.merged.UAOS,
+			UADeviceType:          group.merged.UADeviceType,
+			LastSeenIP:            group.merged.LastSeenIP,
+			FirstSeenAt:           group.merged.FirstSeenAt,
+			LastSeenAt:            group.merged.LastSeenAt,
+			SeenCount:             group.merged.SeenCount,
+		}
+		if err := tx.Model(&UserDeviceProfile{}).Where("id = ?", group.merged.ID).
+			Select(
+				"CanvasHash",
+				"WebGLHash",
+				"WebGLDeepHash",
+				"ClientRectsHash",
+				"MediaDevicesHash",
+				"MediaDeviceCount",
+				"MediaDeviceGroupHash",
+				"MediaDeviceTotal",
+				"SpeechVoicesHash",
+				"SpeechVoiceCount",
+				"SpeechLocalVoiceCount",
+				"AudioHash",
+				"FontsHash",
+				"LocalDeviceID",
+				"CompositeHash",
+				"HTTPHeaderHash",
+				"UABrowser",
+				"UAOS",
+				"UADeviceType",
+				"LastSeenIP",
+				"FirstSeenAt",
+				"LastSeenAt",
+				"SeenCount",
+			).
+			Updates(&mergedUpdate).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit().Error
+}
+
+func mergeUserDeviceProfileRows(base UserDeviceProfile, candidate UserDeviceProfile) UserDeviceProfile {
+	merged := base
+	if candidate.LastSeenAt.After(merged.LastSeenAt) {
+		merged.LastSeenAt = candidate.LastSeenAt
+	}
+	if merged.FirstSeenAt.IsZero() || (!candidate.FirstSeenAt.IsZero() && candidate.FirstSeenAt.Before(merged.FirstSeenAt)) {
+		merged.FirstSeenAt = candidate.FirstSeenAt
+	}
+	if candidate.SeenCount > 0 {
+		merged.SeenCount += candidate.SeenCount
+	} else {
+		merged.SeenCount++
+	}
+	if candidate.CanvasHash != "" {
+		merged.CanvasHash = candidate.CanvasHash
+	}
+	if candidate.WebGLHash != "" {
+		merged.WebGLHash = candidate.WebGLHash
+	}
+	if candidate.WebGLDeepHash != "" {
+		merged.WebGLDeepHash = candidate.WebGLDeepHash
+	}
+	if candidate.ClientRectsHash != "" {
+		merged.ClientRectsHash = candidate.ClientRectsHash
+	}
+	if candidate.MediaDevicesHash != "" {
+		merged.MediaDevicesHash = candidate.MediaDevicesHash
+	}
+	if candidate.MediaDeviceCount != "" {
+		merged.MediaDeviceCount = candidate.MediaDeviceCount
+	}
+	if candidate.MediaDeviceGroupHash != "" {
+		merged.MediaDeviceGroupHash = candidate.MediaDeviceGroupHash
+	}
+	if candidate.MediaDeviceTotal > 0 {
+		merged.MediaDeviceTotal = candidate.MediaDeviceTotal
+	}
+	if candidate.SpeechVoicesHash != "" {
+		merged.SpeechVoicesHash = candidate.SpeechVoicesHash
+	}
+	if candidate.SpeechVoiceCount > 0 {
+		merged.SpeechVoiceCount = candidate.SpeechVoiceCount
+	}
+	if candidate.SpeechLocalVoiceCount > 0 {
+		merged.SpeechLocalVoiceCount = candidate.SpeechLocalVoiceCount
+	}
+	if candidate.AudioHash != "" {
+		merged.AudioHash = candidate.AudioHash
+	}
+	if candidate.FontsHash != "" {
+		merged.FontsHash = candidate.FontsHash
+	}
+	if candidate.LocalDeviceID != "" {
+		merged.LocalDeviceID = candidate.LocalDeviceID
+	}
+	if candidate.CompositeHash != "" {
+		merged.CompositeHash = candidate.CompositeHash
+	}
+	if candidate.HTTPHeaderHash != "" {
+		merged.HTTPHeaderHash = candidate.HTTPHeaderHash
+	}
+	if candidate.UABrowser != "" {
+		merged.UABrowser = candidate.UABrowser
+	}
+	if candidate.UAOS != "" {
+		merged.UAOS = candidate.UAOS
+	}
+	if candidate.UADeviceType != "" {
+		merged.UADeviceType = candidate.UADeviceType
+	}
+	if candidate.LastSeenIP != "" {
+		merged.LastSeenIP = candidate.LastSeenIP
+	}
+	return merged
 }
 
 func execCreateIndexIfMissing(db *gorm.DB, sql string) *gorm.DB {

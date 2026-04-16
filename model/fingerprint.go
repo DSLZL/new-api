@@ -449,8 +449,8 @@ func DeleteOldFingerprints(before time.Time) int64 {
 
 type UserDeviceProfile struct {
 	ID                    int64     `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserID                int       `json:"user_id" gorm:"not null;index;uniqueIndex:uk_udp_user_device_key,priority:1"`
-	DeviceKey             string    `json:"device_key" gorm:"type:varchar(64);not null;index:idx_udp_device_key;uniqueIndex:uk_udp_user_device_key,priority:2"` // 稳定设备标识
+	UserID                int       `json:"user_id" gorm:"not null;index"`
+	DeviceKey             string    `json:"device_key" gorm:"type:varchar(64);not null;index:idx_udp_device_key"` // 稳定设备标识
 	CanvasHash            string    `json:"canvas_hash" gorm:"type:varchar(64)"`
 	WebGLHash             string    `json:"webgl_hash" gorm:"type:varchar(64)"`
 	WebGLDeepHash         string    `json:"webgl_deep_hash" gorm:"column:webgl_deep_hash;type:varchar(64);index"`
