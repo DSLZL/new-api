@@ -557,7 +557,7 @@ const UserAssociations = ({ userId: initialUserId }) => {
         if (safeProfileId) {
           url += `&device_profile_id=${safeProfileId}`;
         }
-        const res = await API.get(url);
+        const res = await API.get(url, { disableDuplicate: true });
 
         if (
           requestId !== queryRequestSeqRef.current ||
