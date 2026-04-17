@@ -20,6 +20,8 @@ For commercial licensing, please contact support@quantumnous.com
 package controller
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -210,21 +212,56 @@ func FPGetUserAssociations(c *gin.Context) {
 	// ★ 改动 3: 传 *model.Fingerprint 而非 int64 fpID
 	//           service.QueryUserAssociations 签名需同步修改（见下方说明）
 	// ──────────────────────────────────────────────────────────
-	result, err := service.QueryUserAssociationsWithOptions(targetUserID, minConf, limit, refresh, baseFingerprint, &service.AssociationQueryOptions{
-		IncludeDetails:   includeDetails,
-		IncludeSharedIPs: includeSharedIPs,
-		CandidateUserID:  candidateUserID,
-	})
-	if err != nil {
-		// 区分"无数据"与"真正的服务器错误"
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"data": gin.H{
-				"associations": []any{},
-				"message":      err.Error(),
-			},
+	mode := c.DefaultQuery("mode", "fast")
+	targetLimit, _ := strconv.Atoi(c.DefaultQuery("target_fp_limit", "0"))
+	candidateLimit, _ := strconv.Atoi(c.DefaultQuery("candidate_fp_limit", "0"))
+	queryTimeoutSec := common.GetFingerprintAssociationQueryTimeoutSeconds()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(queryTimeoutSec)*time.Second)
+	defer cancel()
+
+	type assocQueryResult struct {
+		result *service.AssociationResult
+		err    error
+	}
+	resCh := make(chan assocQueryResult, 1)
+	go func() {
+		result, err := service.QueryUserAssociationsWithOptions(targetUserID, minConf, limit, refresh, baseFingerprint, &service.AssociationQueryOptions{
+			IncludeDetails:            includeDetails,
+			IncludeSharedIPs:          includeSharedIPs,
+			CandidateUserID:           candidateUserID,
+			Mode:                      mode,
+			TargetFingerprintLimit:    targetLimit,
+			CandidateFingerprintLimit: candidateLimit,
 		})
+		resCh <- assocQueryResult{result: result, err: err}
+	}()
+
+	var result *service.AssociationResult
+	select {
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.JSON(http.StatusGatewayTimeout, gin.H{
+				"success":    false,
+				"message":    "association query timeout",
+				"error_code": "ASSOCIATION_QUERY_TIMEOUT",
+			})
+			return
+		}
+		c.JSON(http.StatusRequestTimeout, gin.H{"success": false, "message": "request cancelled"})
 		return
+	case queryRes := <-resCh:
+		if queryRes.err != nil {
+			// 区分"无数据"与"真正的服务器错误"
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"data": gin.H{
+					"associations": []any{},
+					"message":      queryRes.err.Error(),
+				},
+			})
+			return
+		}
+		result = queryRes.result
 	}
 
 	c.JSON(http.StatusOK, gin.H{

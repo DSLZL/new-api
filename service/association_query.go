@@ -58,10 +58,18 @@ type ExistingLinkInfo struct {
 // AssociationQueryOptions 关联查询选项
 // 默认行为：包含 details 与 shared_ips，且不过滤候选用户。
 type AssociationQueryOptions struct {
-	IncludeDetails   bool
-	IncludeSharedIPs bool
-	CandidateUserID  int
+	IncludeDetails    bool
+	IncludeSharedIPs  bool
+	CandidateUserID   int
+	Mode              string
+	TargetFingerprintLimit    int
+	CandidateFingerprintLimit int
 }
+
+const (
+	associationModeFast = "fast"
+	associationModeFull = "full"
+)
 
 const (
 	associationCacheVersion      = "v2"
@@ -115,6 +123,25 @@ func normalizeAssociationCandidateUserID(candidateUserID int) int {
 	return 0
 }
 
+func normalizeAssociationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case associationModeFull:
+		return associationModeFull
+	default:
+		return associationModeFast
+	}
+}
+
+func normalizeAssociationFingerprintLimit(limit int, defaultVal int) int {
+	if limit <= 0 {
+		return defaultVal
+	}
+	if limit > 20 {
+		return 20
+	}
+	return limit
+}
+
 func parseAssociationCacheNegativePayload(payload string) (int, bool) {
 	if payload == associationCacheNegative {
 		return 0, true
@@ -139,8 +166,11 @@ func buildAssociationCacheNegativePayload(candidatesFound int) string {
 
 func normalizeAssociationQueryOptions(options *AssociationQueryOptions) AssociationQueryOptions {
 	normalized := AssociationQueryOptions{
-		IncludeDetails:   true,
-		IncludeSharedIPs: true,
+		IncludeDetails:          false,
+		IncludeSharedIPs:        false,
+		Mode:                    associationModeFast,
+		TargetFingerprintLimit:  common.GetFingerprintAssociationFastTargetLimit(),
+		CandidateFingerprintLimit: common.GetFingerprintAssociationFastCandidateLimit(),
 	}
 	if options == nil {
 		return normalized
@@ -149,6 +179,14 @@ func normalizeAssociationQueryOptions(options *AssociationQueryOptions) Associat
 	normalized.IncludeSharedIPs = options.IncludeSharedIPs
 	if options.CandidateUserID > 0 {
 		normalized.CandidateUserID = options.CandidateUserID
+	}
+	normalized.Mode = normalizeAssociationMode(options.Mode)
+	if normalized.Mode == associationModeFull {
+		normalized.TargetFingerprintLimit = normalizeAssociationFingerprintLimit(options.TargetFingerprintLimit, common.GetFingerprintAssociationFullTargetLimit())
+		normalized.CandidateFingerprintLimit = normalizeAssociationFingerprintLimit(options.CandidateFingerprintLimit, common.GetFingerprintAssociationFullCandidateLimit())
+	} else {
+		normalized.TargetFingerprintLimit = normalizeAssociationFingerprintLimit(options.TargetFingerprintLimit, common.GetFingerprintAssociationFastTargetLimit())
+		normalized.CandidateFingerprintLimit = normalizeAssociationFingerprintLimit(options.CandidateFingerprintLimit, common.GetFingerprintAssociationFastCandidateLimit())
 	}
 	return normalized
 }
@@ -166,7 +204,7 @@ func buildAssociationCacheKey(targetUserID int, minConfidence float64, limit int
 		sharedIPFlag = 1
 	}
 	return fmt.Sprintf(
-		"fp:assoc:%s:u:%d:min:%.3f:limit:%d:base:%s:d:%d:s:%d:c:%d",
+		"fp:assoc:%s:u:%d:min:%.3f:limit:%d:base:%s:d:%d:s:%d:c:%d:m:%s:tfl:%d:cfl:%d",
 		associationCacheVersion,
 		targetUserID,
 		normalizedMin,
@@ -175,6 +213,9 @@ func buildAssociationCacheKey(targetUserID int, minConfidence float64, limit int
 		detailFlag,
 		sharedIPFlag,
 		queryOptions.CandidateUserID,
+		queryOptions.Mode,
+		queryOptions.TargetFingerprintLimit,
+		queryOptions.CandidateFingerprintLimit,
 	)
 }
 
@@ -268,10 +309,13 @@ func QueryUserAssociationsWithOptions(
 		targetFPs = []*model.Fingerprint{baseFingerprint}
 	} else {
 		// 默认逻辑：先查流水表
-		targetFPs = model.GetLatestFingerprints(targetUserID, 10)
+		targetFPs = model.GetLatestFingerprints(targetUserID, normalizedOptions.TargetFingerprintLimit)
 		// ★ 新增兜底: 流水表可能已被定期清理，改从设备档案表获取
 		if len(targetFPs) == 0 {
 			targetFPs = model.GetDeviceProfilesAsFingerprints(targetUserID)
+			if len(targetFPs) > normalizedOptions.TargetFingerprintLimit {
+				targetFPs = targetFPs[:normalizedOptions.TargetFingerprintLimit]
+			}
 		}
 	}
 
@@ -326,10 +370,13 @@ func QueryUserAssociationsWithOptions(
 		if candidateUserID > 0 && candidateUID != candidateUserID {
 			continue
 		}
-		candidateFPs := model.GetLatestFingerprints(candidateUID, 10)
+		candidateFPs := model.GetLatestFingerprints(candidateUID, normalizedOptions.CandidateFingerprintLimit)
 		// ★ 新增兜底: 候选用户流水表也可能为空
 		if len(candidateFPs) == 0 {
 			candidateFPs = model.GetDeviceProfilesAsFingerprints(candidateUID)
+			if len(candidateFPs) > normalizedOptions.CandidateFingerprintLimit {
+				candidateFPs = candidateFPs[:normalizedOptions.CandidateFingerprintLimit]
+			}
 		}
 		if len(candidateFPs) == 0 {
 			continue

@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import axios from 'axios';
 import { useTranslation } from 'react-i18next';
 import {
   Card,
@@ -170,6 +171,7 @@ const UserAssociations = ({ userId: initialUserId }) => {
   const [associationDetailLoading, setAssociationDetailLoading] = useState({});
   const activeUserIdRef = useRef(safeInt(initialUserId));
   const queryRequestSeqRef = useRef(0);
+  const queryAbortControllerRef = useRef(null);
   const profileRequestSeqRef = useRef(0);
   const dashboardRequestSeqRef = useRef(0);
   const assocProfileRequestSeqRef = useRef({});
@@ -205,6 +207,10 @@ const UserAssociations = ({ userId: initialUserId }) => {
   };
 
   const resetAssociationState = useCallback(() => {
+    if (queryAbortControllerRef.current) {
+      queryAbortControllerRef.current.abort();
+      queryAbortControllerRef.current = null;
+    }
     setLoading(false);
     setResult(null);
     setQueried(false);
@@ -247,6 +253,15 @@ const UserAssociations = ({ userId: initialUserId }) => {
     activeUserIdRef.current = safeInt(inputUserId);
     resetAssociationState();
   }, [inputUserId, resetAssociationState]);
+
+  useEffect(() => {
+    return () => {
+      if (queryAbortControllerRef.current) {
+        queryAbortControllerRef.current.abort();
+        queryAbortControllerRef.current = null;
+      }
+    };
+  }, []);
 
   const fetchNetworkAndTemporalProfile = useCallback(
     async (userIdSnapshot = safeInt(inputUserId)) => {
@@ -472,7 +487,7 @@ const UserAssociations = ({ userId: initialUserId }) => {
       }));
 
       try {
-        let url = `/api/admin/fingerprint/user/${targetUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=false&include_details=true&include_shared_ips=true&candidate_user_id=${safeAssocUserId}`;
+        let url = `/api/admin/fingerprint/user/${targetUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=false&mode=full&include_details=true&include_shared_ips=true&candidate_user_id=${safeAssocUserId}`;
         const safeProfileId = safeInt(selectedProfileId);
         if (safeProfileId) {
           url += `&device_profile_id=${safeProfileId}`;
@@ -551,13 +566,22 @@ const UserAssociations = ({ userId: initialUserId }) => {
       associationDetailRequestSeqRef.current = {};
 
       setLoading(true);
+      if (queryAbortControllerRef.current) {
+        queryAbortControllerRef.current.abort();
+      }
+      const abortController = new AbortController();
+      queryAbortControllerRef.current = abortController;
       try {
-        let url = `/api/admin/fingerprint/user/${safeUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=${refresh}&include_details=false&include_shared_ips=false`;
+        let url = `/api/admin/fingerprint/user/${safeUserId}/associations?min_confidence=${minConfidence}&limit=20&refresh=${refresh}&mode=fast&include_details=false&include_shared_ips=false`;
         const safeProfileId = safeInt(profileId);
         if (safeProfileId) {
           url += `&device_profile_id=${safeProfileId}`;
         }
-        const res = await API.get(url, { disableDuplicate: true });
+        const res = await API.get(url, {
+          disableDuplicate: true,
+          skipErrorHandler: true,
+          signal: abortController.signal,
+        });
 
         if (
           requestId !== queryRequestSeqRef.current ||
@@ -575,13 +599,23 @@ const UserAssociations = ({ userId: initialUserId }) => {
           showError(res.data.message || t('查询失败'));
         }
       } catch (e) {
+        if (axios.isCancel(e) || e?.code === 'ERR_CANCELED') {
+          return;
+        }
         if (
           requestId === queryRequestSeqRef.current &&
           activeUserIdRef.current === safeUserId
         ) {
-          showError(e.message || t('网络错误'));
+          if (e) {
+            showError(e);
+          } else {
+            showError(t('网络错误'));
+          }
         }
       } finally {
+        if (queryAbortControllerRef.current === abortController) {
+          queryAbortControllerRef.current = null;
+        }
         if (
           requestId === queryRequestSeqRef.current &&
           activeUserIdRef.current === safeUserId

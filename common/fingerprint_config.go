@@ -125,6 +125,26 @@ func GetFingerprintCandidateMaxTotal() int {
 	return parseFingerprintPositiveInt("FINGERPRINT_CANDIDATE_MAX_TOTAL", 1200)
 }
 
+func GetFingerprintAssociationQueryTimeoutSeconds() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ASSOC_QUERY_TIMEOUT_SECONDS", 8)
+}
+
+func GetFingerprintAssociationFastTargetLimit() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ASSOC_FAST_TARGET_FP_LIMIT", 3)
+}
+
+func GetFingerprintAssociationFastCandidateLimit() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ASSOC_FAST_CANDIDATE_FP_LIMIT", 3)
+}
+
+func GetFingerprintAssociationFullTargetLimit() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ASSOC_FULL_TARGET_FP_LIMIT", 10)
+}
+
+func GetFingerprintAssociationFullCandidateLimit() int {
+	return parseFingerprintPositiveInt("FINGERPRINT_ASSOC_FULL_CANDIDATE_FP_LIMIT", 10)
+}
+
 func GetFingerprintTemporalRefreshMaxUsers() int {
 	return parseFingerprintPositiveInt("FINGERPRINT_TEMPORAL_REFRESH_MAX_USERS", 1000)
 }

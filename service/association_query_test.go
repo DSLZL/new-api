@@ -154,22 +154,33 @@ func TestBuildAssociationCacheKey_IncludesQueryOptions(t *testing.T) {
 
 	defaultOptions := normalizeAssociationQueryOptions(nil)
 	lightweightOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
-		IncludeDetails:   false,
+		IncludeDetails:   true,
 		IncludeSharedIPs: false,
+	})
+	modeOnlyOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
+		IncludeDetails:           false,
+		IncludeSharedIPs:         false,
+		Mode:                     associationModeFull,
+		TargetFingerprintLimit:   defaultOptions.TargetFingerprintLimit,
+		CandidateFingerprintLimit: defaultOptions.CandidateFingerprintLimit,
 	})
 	candidateOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
 		IncludeDetails:   true,
 		IncludeSharedIPs: true,
 		CandidateUserID:  202,
+		Mode:             associationModeFull,
 	})
 
 	keyDefault := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, defaultOptions)
 	keyLightweight := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, lightweightOptions)
+	keyModeOnly := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, modeOnlyOptions)
 	keyCandidate := buildAssociationCacheKey(101, 0.3, 20, baseFingerprint, candidateOptions)
 
 	require.NotEqual(t, keyDefault, keyLightweight)
+	require.NotEqual(t, keyDefault, keyModeOnly)
 	require.NotEqual(t, keyDefault, keyCandidate)
 	require.NotEqual(t, keyLightweight, keyCandidate)
+	require.NotEqual(t, keyModeOnly, keyCandidate)
 }
 
 func TestQueryUserAssociationsWithOptions_LimitAndBatchHydration(t *testing.T) {
