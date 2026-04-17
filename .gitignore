@@ -39,3 +39,4 @@ web/.serena/.gitignore
 web/.serena/project.yml
 token_estimator_test.go
 1.md
+.omc/
