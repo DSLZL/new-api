@@ -280,18 +280,11 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
+		&PerfMetric{},
 	)
 	if err != nil {
 		return err
 	}
-	if err := ensureBehaviorProfileTables(DB); err != nil {
-		return err
-	}
-
-	if err := RunFingerprintMigration(); err != nil {
-		return err
-	}
-
 	if common.UsingSQLite {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -336,8 +329,7 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
-		{&KeystrokeProfile{}, "KeystrokeProfile"},
-		{&MouseProfile{}, "MouseProfile"},
+		{&PerfMetric{}, "PerfMetric"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
