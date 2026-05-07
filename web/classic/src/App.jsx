@@ -109,6 +109,8 @@ function App() {
     prevUserIdRef.current = userId;
   }, [userId]);
 
+  const fingerprintEnabled = Boolean(statusState?.status?.fingerprint_enabled);
+
   // ── 层1: 跨标签页 storage 事件（其他标签页登录时触发）──
   useEffect(() => {
     const onStorage = (e) => {
@@ -133,14 +135,14 @@ function App() {
     return () => clearInterval(interval);
   }, [userId, syncUserId]);
 
-  useFingerprint(userId);
+  useFingerprint(userId, { enabled: fingerprintEnabled });
 
   useEffect(() => {
-    if (userId <= 0) {
+    if (userId <= 0 || !fingerprintEnabled) {
       return;
     }
     void fingerprintCollector.primePersistenceAfterLogin();
-  }, [userId]);
+  }, [fingerprintEnabled, userId]);
   // ════════════════════════════════════════════════════════════
   // ★ 指纹采集
 

@@ -66,8 +66,12 @@ export const useAuthStore = create<AuthState>()((set) => {
           if (typeof window !== 'undefined') {
             if (user) {
               window.localStorage.setItem('user', JSON.stringify(user))
+              if (user.id !== undefined && user.id !== null) {
+                window.localStorage.setItem('uid', String(user.id))
+              }
             } else {
               window.localStorage.removeItem('user')
+              window.localStorage.removeItem('uid')
             }
           }
           return { ...state, auth: { ...state.auth, user } }
@@ -76,6 +80,7 @@ export const useAuthStore = create<AuthState>()((set) => {
         set((state) => {
           if (typeof window !== 'undefined') {
             window.localStorage.removeItem('user')
+            window.localStorage.removeItem('uid')
           }
           return {
             ...state,

@@ -78,12 +78,19 @@ api.interceptors.response.use(
       const status = error?.response?.status
 
       if (status === 401) {
-        // Unauthorized: clear auth state and show toast
-        toast.error(i18next.t('Session expired!'))
-        try {
-          useAuthStore.getState().auth.reset()
-        } catch {
-          /* empty */
+        const authErrorCode = getAuthErrorCode(error?.response?.data)
+        if (shouldForceLogoutOnUnauthorized(authErrorCode)) {
+          toast.error(i18next.t('Session expired!'))
+          try {
+            useAuthStore.getState().auth.reset()
+          } catch {
+            /* empty */
+          }
+        } else {
+          const msg =
+            error?.response?.data?.message ||
+            i18next.t('Request error, please retry!')
+          toast.error(msg)
         }
       } else {
         // Other errors: show error message from response or default
@@ -97,6 +104,28 @@ api.interceptors.response.use(
 )
 
 // ============================================================================
+// Auth Error Classification
+// ============================================================================
+
+type AuthErrorBody = {
+  code?: unknown
+}
+
+export function getAuthErrorCode(responseBody: unknown): string {
+  if (responseBody && typeof responseBody === 'object') {
+    const code = (responseBody as AuthErrorBody).code
+    if (typeof code === 'string') {
+      return code.trim()
+    }
+  }
+  return ''
+}
+
+export function shouldForceLogoutOnUnauthorized(code: string): boolean {
+  return code === 'AUTH_NOT_LOGGED_IN'
+}
+
+// ============================================================================
 // Common Headers Utility
 // ============================================================================
 
@@ -106,7 +135,18 @@ api.interceptors.response.use(
 function getUserId(): string | null {
   try {
     if (typeof window !== 'undefined') {
-      return window.localStorage.getItem('uid')
+      const uid = window.localStorage.getItem('uid')
+      if (uid && uid.trim() !== '') {
+        return uid
+      }
+      const rawUser = window.localStorage.getItem('user')
+      if (!rawUser) {
+        return null
+      }
+      const parsedUser = JSON.parse(rawUser) as { id?: number | string }
+      if (parsedUser?.id !== undefined && parsedUser?.id !== null) {
+        return String(parsedUser.id)
+      }
     }
   } catch {
     /* empty */

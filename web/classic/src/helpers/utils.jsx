@@ -119,6 +119,18 @@ if (isMobileScreen) {
   // showNoticeOptions.transition = 'flip';
 }
 
+function getAuthErrorCode(error) {
+  const code = error?.response?.data?.code;
+  if (typeof code === 'string') {
+    return code.trim();
+  }
+  return '';
+}
+
+function shouldForceLogoutOnUnauthorized(code) {
+  return code === 'AUTH_NOT_LOGGED_IN';
+}
+
 export function showError(error) {
   console.error(error);
   if (error?.message) {
@@ -127,10 +139,15 @@ export function showError(error) {
       if (status) {
         switch (status) {
           case 401:
-            // 清除用户状态
-            localStorage.removeItem('user');
-            // toast.error('错误：未登录或登录已过期，请重新登录！', showErrorOptions);
-            window.location.href = '/login?expired=true';
+            if (shouldForceLogoutOnUnauthorized(getAuthErrorCode(error))) {
+              localStorage.removeItem('user');
+              window.location.href = '/login?expired=true';
+            } else {
+              Toast.error(
+                '错误：' +
+                  (error?.response?.data?.message || '请求鉴权失败，请重试'),
+              );
+            }
             break;
           case 429:
             Toast.error('错误：请求次数过多，请稍后再试！');

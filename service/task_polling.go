@@ -91,10 +91,13 @@ func sweepTimedOutTasks(ctx context.Context) {
 func TaskPollingLoop() {
 	for {
 		time.Sleep(time.Duration(15) * time.Second)
-		common.SysLog("任务进度轮询开始")
 		ctx := context.TODO()
 		sweepTimedOutTasks(ctx)
 		allTasks := model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
+		shouldLogRound := shouldLogTaskPollingRound(allTasks)
+		if shouldLogRound {
+			common.SysLog("任务进度轮询开始")
+		}
 		platformTask := make(map[constant.TaskPlatform][]*model.Task)
 		for _, t := range allTasks {
 			platformTask[t.Platform] = append(platformTask[t.Platform], t)
@@ -133,8 +136,14 @@ func TaskPollingLoop() {
 
 			DispatchPlatformUpdate(platform, taskChannelM, taskM)
 		}
-		common.SysLog("任务进度轮询完成")
+		if shouldLogRound {
+			common.SysLog("任务进度轮询完成")
+		}
 	}
+}
+
+func shouldLogTaskPollingRound(tasks []*model.Task) bool {
+	return len(tasks) > 0
 }
 
 // DispatchPlatformUpdate 按平台分发轮询更新

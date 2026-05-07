@@ -10,7 +10,7 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
-import { getStatus } from '@/lib/api'
+import { getAuthErrorCode, getStatus, shouldForceLogoutOnUnauthorized } from '@/lib/api'
 import '@/lib/dayjs'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -60,10 +60,18 @@ const queryClient = new QueryClient({
     onError: (error) => {
       if (error instanceof AxiosError) {
         if (error.response?.status === 401) {
-          toast.error(i18next.t('Session expired!'))
-          useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
-          router.navigate({ to: '/sign-in', search: { redirect } })
+          const authErrorCode = getAuthErrorCode(error.response?.data)
+          if (shouldForceLogoutOnUnauthorized(authErrorCode)) {
+            toast.error(i18next.t('Session expired!'))
+            useAuthStore.getState().auth.reset()
+            const redirect = `${router.history.location.href}`
+            router.navigate({ to: '/sign-in', search: { redirect } })
+          } else {
+            const message =
+              (error.response?.data as { message?: string } | undefined)
+                ?.message || i18next.t('Request error, please retry!')
+            toast.error(message)
+          }
         }
         if (error.response?.status === 500) {
           toast.error(i18next.t('Internal Server Error!'))

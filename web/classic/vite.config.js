@@ -25,16 +25,18 @@ import { codeInspectorPlugin } from 'code-inspector-plugin';
 const { vitePluginSemi } = pkg;
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
   plugins: [
-    codeInspectorPlugin({
-      bundler: 'vite',
-    }),
+    command === 'serve'
+      ? codeInspectorPlugin({
+          bundler: 'vite',
+        })
+      : null,
     {
       name: 'treat-js-files-as-jsx',
       async transform(code, id) {
@@ -54,7 +56,7 @@ export default defineConfig({
     vitePluginSemi({
       cssLayer: true,
     }),
-  ],
+  ].filter(Boolean),
   optimizeDeps: {
     force: true,
     esbuildOptions: {
@@ -65,25 +67,10 @@ export default defineConfig({
     },
   },
   build: {
+    reportCompressedSize: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'react-core': ['react', 'react-dom', 'react-router-dom'],
-          'semi-ui': ['@douyinfe/semi-icons', '@douyinfe/semi-ui'],
-          tools: ['axios', 'history', 'marked'],
-          'react-components': [
-            'react-dropzone',
-            'react-fireworks',
-            'react-telegram-login',
-            'react-toastify',
-            'react-turnstile',
-          ],
-          i18n: [
-            'i18next',
-            'react-i18next',
-            'i18next-browser-languagedetector',
-          ],
-        },
+        manualChunks: undefined,
       },
     },
   },
@@ -104,4 +91,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

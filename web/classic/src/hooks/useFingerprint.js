@@ -293,15 +293,36 @@ async function doReport() {
   );
 }
 
-export function useFingerprint(userId) {
+export function useFingerprint(userId, options = {}) {
+  const { enabled = true } = options;
   const reported = useRef(false);
   const timerRef = useRef(null);
   const prevUserIdRef = useRef(userId);
   const currentUidRef = useRef('0');
   const behaviorRetryControllerRef = useRef(null);
 
+  useEffect(() => {
+    if (enabled) {
+      return;
+    }
+
+    reported.current = false;
+    const currentUid = currentUidRef.current || getCurrentUid();
+    resetCurrentFingerprintRuntimeState(currentUid);
+    inFlightReportStore.clear(currentUid);
+
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, [enabled]);
+
   // ── 主路径：userId 变化为有效值时触发 ──
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     if (hasFingerprintUserChanged(prevUserIdRef.current, userId)) {
       reported.current = false;
       resetCurrentFingerprintRuntimeState(prevUserIdRef.current);
@@ -346,11 +367,15 @@ export function useFingerprint(userId) {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [userId]);
+  }, [enabled, userId]);
 
   // ── 备用路径：监听 napi:user-login 事件 ──
   // 覆盖"同一 userId 重新登录"等 effect 不会重新执行的场景
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     let loginTimer = null;
     const onLogin = () => {
       reported.current = false;
@@ -383,13 +408,17 @@ export function useFingerprint(userId) {
       window.removeEventListener('napi:user-login', onLogin);
       if (loginTimer) clearTimeout(loginTimer);
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
     currentUidRef.current = getCurrentUid();
   }, [userId]);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     behaviorRetryControllerRef.current?.dispose();
     behaviorRetryControllerRef.current = createBehaviorRetryReportController({
       threshold: KEYSTROKE_SAMPLE_THRESHOLD,
@@ -457,10 +486,14 @@ export function useFingerprint(userId) {
       behaviorRetryControllerRef.current?.dispose();
       behaviorRetryControllerRef.current = null;
     };
-  }, []);
+  }, [enabled]);
 
   // SPA 后续动态出现的输入框：在 focusin 时按需挂载 keystroke capture
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     attachMouseBehaviorTarget(window);
 
     const onFocusIn = (event) => {
@@ -483,5 +516,5 @@ export function useFingerprint(userId) {
       window.removeEventListener('click', onBehaviorActivity, true);
       window.removeEventListener('wheel', onBehaviorActivity, true);
     };
-  }, []);
+  }, [enabled]);
 }
