@@ -290,8 +290,10 @@ func ReportFingerprint(c *gin.Context) {
 				if model.IsWhitelisted(userID, otherUID) {
 					continue
 				}
-				_ = model.UpsertLink(userID, otherUID, 0.95, 1, 1,
-					`[{"dimension":"device_key","display_name":"设备档案(同设备多账号)","score":0.95,"weight":0.95,"matched":true,"category":"device"}]`)
+				if err := model.UpsertLink(userID, otherUID, 0.95, 1, 1,
+					`[{"dimension":"device_key","display_name":"设备档案(同设备多账号)","score":0.95,"weight":0.95,"matched":true,"category":"device"}]`); err != nil {
+						common.SysError("failed to upsert device-key conflict link: " + err.Error())
+					}
 			}
 		}(profile.DeviceKey)
 	}

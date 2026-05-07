@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -19,16 +20,16 @@ type Fingerprint struct {
 	UserID int `json:"user_id" gorm:"index;not null"`
 
 	// ─── 网络层指纹 ───
-	IPAddress    string `json:"ip_address" gorm:"type:varchar(45);index;not null;default:''"`
-	IPCountry    string `json:"ip_country" gorm:"type:varchar(10);default:''"`
-	IPRegion     string `json:"ip_region" gorm:"type:varchar(50);default:''"`
-	IPCity       string `json:"ip_city" gorm:"type:varchar(50);default:''"`
-	IPISP        string `json:"ip_isp" gorm:"type:varchar(100);default:''"`
-	IPType       string `json:"ip_type" gorm:"type:varchar(20);default:''"` // residential/datacenter/vpn/proxy/tor
+	IPAddress     string `json:"ip_address" gorm:"type:varchar(45);index;not null;default:''"`
+	IPCountry     string `json:"ip_country" gorm:"type:varchar(10);default:''"`
+	IPRegion      string `json:"ip_region" gorm:"type:varchar(50);default:''"`
+	IPCity        string `json:"ip_city" gorm:"type:varchar(50);default:''"`
+	IPISP         string `json:"ip_isp" gorm:"type:varchar(100);default:''"`
+	IPType        string `json:"ip_type" gorm:"type:varchar(20);default:''"` // residential/datacenter/vpn/proxy/tor
 	DNSResolverIP string `json:"dns_resolver_ip" gorm:"type:varchar(45);index;default:''"`
-	ASN          int    `json:"asn" gorm:"default:0"`
-	ASNOrg       string `json:"asn_org" gorm:"type:varchar(160);default:''"`
-	IsDatacenter bool   `json:"is_datacenter" gorm:"default:false"`
+	ASN           int    `json:"asn" gorm:"default:0"`
+	ASNOrg        string `json:"asn_org" gorm:"type:varchar(160);default:''"`
+	IsDatacenter  bool   `json:"is_datacenter" gorm:"default:false"`
 
 	UserAgent    string `json:"user_agent" gorm:"type:text;default:''"`
 	UABrowser    string `json:"ua_browser" gorm:"type:varchar(50);default:''"`
@@ -188,13 +189,39 @@ func PersistFingerprintReportAtomic(fp *Fingerprint, profile *UserDeviceProfile,
 
 // ─── 查询方法 ───
 
+func fingerprintQueryDB(ctx context.Context) *gorm.DB {
+	if DB == nil {
+		return nil
+	}
+	if ctx == nil {
+		return DB
+	}
+	return DB.WithContext(ctx)
+}
+
 func GetLatestFingerprints(userID int, limit int) []*Fingerprint {
+	fps, _ := GetLatestFingerprintsWithContextE(context.Background(), userID, limit)
+	return fps
+}
+
+func GetLatestFingerprintsWithContext(ctx context.Context, userID int, limit int) []*Fingerprint {
+	fps, _ := GetLatestFingerprintsWithContextE(ctx, userID, limit)
+	return fps
+}
+
+func GetLatestFingerprintsWithContextE(ctx context.Context, userID int, limit int) ([]*Fingerprint, error) {
 	var fps []*Fingerprint
-	DB.Where("user_id = ?", userID).
+	db := fingerprintQueryDB(ctx)
+	if db == nil {
+		return nil, nil
+	}
+	if err := db.Where("user_id = ?", userID).
 		Order("created_at DESC").
 		Limit(limit).
-		Find(&fps)
-	return fps
+		Find(&fps).Error; err != nil {
+		return nil, err
+	}
+	return fps, nil
 }
 
 func GetFingerprintByID(id int64) *Fingerprint {
@@ -207,132 +234,116 @@ func GetFingerprintByID(id int64) *Fingerprint {
 
 // ─── 设备指纹候选发现 ───
 
-func FindUsersByCanvasHash(hash string) []int {
-	if hash == "" {
+func findUsersByFingerprintFieldWithContext(ctx context.Context, column string, value string) []int {
+	if value == "" {
+		return nil
+	}
+	db := fingerprintQueryDB(ctx)
+	if db == nil {
 		return nil
 	}
 	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("canvas_hash = ? AND canvas_hash != ''", hash).
+	db.Model(&Fingerprint{}).
+		Where(column+" = ? AND "+column+" != ''", value).
 		Distinct("user_id").
 		Pluck("user_id", &userIDs)
 	return userIDs
+}
+
+func FindUsersByCanvasHash(hash string) []int {
+	return FindUsersByCanvasHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByCanvasHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "canvas_hash", hash)
 }
 
 func FindUsersByWebGLHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("webgl_hash = ? AND webgl_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByWebGLHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByWebGLHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "webgl_hash", hash)
 }
 
 func FindUsersByWebGLDeepHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("webgl_deep_hash = ? AND webgl_deep_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByWebGLDeepHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByWebGLDeepHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "webgl_deep_hash", hash)
 }
 
 func FindUsersByClientRectsHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("client_rects_hash = ? AND client_rects_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByClientRectsHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByClientRectsHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "client_rects_hash", hash)
 }
 
 func FindUsersByMediaDevicesHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("media_devices_hash = ? AND media_devices_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByMediaDevicesHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByMediaDevicesHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "media_devices_hash", hash)
 }
 
 func FindUsersByMediaDeviceGroupHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("media_device_group_hash = ? AND media_device_group_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByMediaDeviceGroupHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByMediaDeviceGroupHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "media_device_group_hash", hash)
 }
 
 func FindUsersBySpeechVoicesHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("speech_voices_hash = ? AND speech_voices_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersBySpeechVoicesHashWithContext(context.Background(), hash)
+}
+
+func FindUsersBySpeechVoicesHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "speech_voices_hash", hash)
 }
 
 func FindUsersByAudioHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("audio_hash = ? AND audio_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByAudioHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByAudioHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "audio_hash", hash)
 }
 
 func FindUsersByFontsHash(hash string) []int {
-	if hash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("fonts_hash = ? AND fonts_hash != ''", hash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByFontsHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByFontsHashWithContext(ctx context.Context, hash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "fonts_hash", hash)
 }
 
 func FindUsersByDeviceID(deviceID string) []int {
-	if deviceID == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("local_device_id = ? AND local_device_id != ''", deviceID).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByDeviceIDWithContext(context.Background(), deviceID)
+}
+
+func FindUsersByDeviceIDWithContext(ctx context.Context, deviceID string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "local_device_id", deviceID)
 }
 
 func FindUsersByCompositeHash(hash string) []int {
+	return FindUsersByCompositeHashWithContext(context.Background(), hash)
+}
+
+func FindUsersByCompositeHashWithContext(ctx context.Context, hash string) []int {
 	if hash == "" {
 		return nil
 	}
+	db := fingerprintQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
 	var userIDs []int
-	DB.Model(&Fingerprint{}).
+	db.Model(&Fingerprint{}).
 		Where("composite_hash = ?", hash).
 		Distinct("user_id").
 		Pluck("user_id", &userIDs)
@@ -340,75 +351,51 @@ func FindUsersByCompositeHash(hash string) []int {
 }
 
 func FindUsersByJA3(ja3 string) []int {
-	if ja3 == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("tls_ja3_hash = ? AND tls_ja3_hash != ''", ja3).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByJA3WithContext(context.Background(), ja3)
+}
+
+func FindUsersByJA3WithContext(ctx context.Context, ja3 string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "tls_ja3_hash", ja3)
 }
 
 func FindUsersByJA4(ja4 string) []int {
-	if ja4 == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("ja4 = ? AND ja4 != ''", ja4).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByJA4WithContext(context.Background(), ja4)
+}
+
+func FindUsersByJA4WithContext(ctx context.Context, ja4 string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "ja4", ja4)
 }
 
 func FindUsersByHTTPHeaderHash(httpHeaderHash string) []int {
-	if httpHeaderHash == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("http_header_hash = ? AND http_header_hash != ''", httpHeaderHash).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByHTTPHeaderHashWithContext(context.Background(), httpHeaderHash)
+}
+
+func FindUsersByHTTPHeaderHashWithContext(ctx context.Context, httpHeaderHash string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "http_header_hash", httpHeaderHash)
 }
 
 func FindUsersByETagID(etagID string) []int {
-	if etagID == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("etag_id = ? AND etag_id != ''", etagID).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByETagIDWithContext(context.Background(), etagID)
+}
+
+func FindUsersByETagIDWithContext(ctx context.Context, etagID string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "etag_id", etagID)
 }
 
 func FindUsersByPersistentID(persistentID string) []int {
-	if persistentID == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("persistent_id = ? AND persistent_id != ''", persistentID).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByPersistentIDWithContext(context.Background(), persistentID)
+}
+
+func FindUsersByPersistentIDWithContext(ctx context.Context, persistentID string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "persistent_id", persistentID)
 }
 
 func FindUsersByDNSResolverIP(resolverIP string) []int {
-	if resolverIP == "" {
-		return nil
-	}
-	var userIDs []int
-	DB.Model(&Fingerprint{}).
-		Where("dns_resolver_ip = ? AND dns_resolver_ip != ''", resolverIP).
-		Distinct("user_id").
-		Pluck("user_id", &userIDs)
-	return userIDs
+	return FindUsersByDNSResolverIPWithContext(context.Background(), resolverIP)
+}
+
+func FindUsersByDNSResolverIPWithContext(ctx context.Context, resolverIP string) []int {
+	return findUsersByFingerprintFieldWithContext(ctx, "dns_resolver_ip", resolverIP)
 }
 
 // ─── 统计与维护 ───
@@ -635,8 +622,16 @@ func upsertDeviceProfileWithDB(db *gorm.DB, profile *UserDeviceProfile) error {
 
 // GetDeviceProfiles 获取指定用户的所有设备档案
 func GetDeviceProfiles(userID int) []*UserDeviceProfile {
+	return GetDeviceProfilesWithContext(context.Background(), userID)
+}
+
+func GetDeviceProfilesWithContext(ctx context.Context, userID int) []*UserDeviceProfile {
 	var profiles []*UserDeviceProfile
-	DB.Where("user_id = ?", userID).
+	db := fingerprintQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
+	db.Where("user_id = ?", userID).
 		Order("last_seen_at DESC").
 		Find(&profiles)
 	return profiles
@@ -672,7 +667,11 @@ func CheckDeviceKeyConflict(userID int, deviceKey string) []int {
 // GetDeviceProfilesAsFingerprints 将用户设备档案转为 Fingerprint 切片
 // 供 CompareFingerprints 直接使用，避免依赖流水表
 func GetDeviceProfilesAsFingerprints(userID int) []*Fingerprint {
-	profiles := GetDeviceProfiles(userID)
+	return GetDeviceProfilesAsFingerprintsWithContext(context.Background(), userID)
+}
+
+func GetDeviceProfilesAsFingerprintsWithContext(ctx context.Context, userID int) []*Fingerprint {
+	profiles := GetDeviceProfilesWithContext(ctx, userID)
 	if len(profiles) == 0 {
 		return nil
 	}

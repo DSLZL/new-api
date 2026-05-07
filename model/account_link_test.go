@@ -1,14 +1,20 @@
 package model
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"log"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm/logger"
 	"gorm.io/gorm"
 )
 
@@ -97,11 +103,35 @@ func TestUpsertLink_KeepsHigherConfidenceWhenWeakerEvidenceArrives(t *testing.T)
 	require.Equal(t, `[{"dimension":"canvas","score":0.91}]`, link.MatchDetails)
 }
 
-func TestEnsureAccountLinkUniqueIndex_NormalizesLegacyRows(t *testing.T) {
+func TestUpsertLinkSnapshot_ReturnsErrorWhenUniqueIndexNotReady(t *testing.T) {
 	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&AccountLink{}))
+	DB = db
+	setAccountLinkWritesReady(false)
+
+	err = UpsertLinkSnapshot(1, 2, 0.9, 2, 3, `[]`)
+	require.ErrorIs(t, err, ErrAccountLinkUniqueIndexNotReady)
+}
+
+func TestUpsertLink_ReturnsErrorWhenUniqueIndexNotReady(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}))
+	DB = db
+	setAccountLinkWritesReady(false)
+
+	err = UpsertLink(1, 2, 0.9, 2, 3, `[]`)
+	require.ErrorIs(t, err, ErrAccountLinkUniqueIndexNotReady)
+}
+
+func TestRepairAccountLinkUniqueIndex_NormalizesLegacyRows(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
 	DB = db
 
 	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
@@ -132,8 +162,12 @@ func TestEnsureAccountLinkUniqueIndex_NormalizesLegacyRows(t *testing.T) {
 		UpdatedAt:       reviewedAt,
 	}).Error)
 
-	require.NoError(t, EnsureAccountLinkUniqueIndex(db))
+	require.NoError(t, RepairAccountLinkUniqueIndex(db))
 	require.True(t, db.Migrator().HasIndex(&AccountLink{}, "uk_link_pair"))
+
+	var option Option
+	require.NoError(t, db.Where("key = ?", accountLinkUniqueIndexNormalizedOptionKey).First(&option).Error)
+	require.Equal(t, accountLinkUniqueIndexNormalizedOptionVal, option.Value)
 
 	var links []AccountLink
 	require.NoError(t, db.Order("id ASC").Find(&links).Error)
@@ -170,6 +204,258 @@ func TestEnsureAccountLinkUniqueIndex_PreservesUnknownLegacyStatus(t *testing.T)
 	require.NotNil(t, link)
 	require.Equal(t, "legacy_blocked", link.Status)
 	require.Equal(t, "keep custom status", link.ReviewNote)
+}
+
+func TestRepairAccountLinkUniqueIndex_MarkerDoesNotSkipNormalizationWithoutIndex(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	DB = db
+
+	require.NoError(t, db.Create(&AccountLink{
+		UserIDA:      8,
+		UserIDB:      3,
+		Confidence:   0.66,
+		Status:       AccountLinkStatusPending,
+		MatchDetails: `[{"dimension":"ip_exact","score":0.66}]`,
+	}).Error)
+	require.NoError(t, db.Create(&Option{
+		Key:   accountLinkUniqueIndexNormalizedOptionKey,
+		Value: accountLinkUniqueIndexNormalizedOptionVal,
+	}).Error)
+
+	require.NoError(t, RepairAccountLinkUniqueIndex(db))
+	require.True(t, db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName))
+
+	var links []AccountLink
+	require.NoError(t, db.Order("id ASC").Find(&links).Error)
+	require.Len(t, links, 1)
+	require.Equal(t, 3, links[0].UserIDA)
+	require.Equal(t, 8, links[0].UserIDB)
+}
+
+func TestEnsureAccountLinkUniqueIndex_SkipsHeavyRepairOnStartupWhenLegacyDataExists(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	DB = db
+
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.8, Status: AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error)
+
+	require.NoError(t, EnsureAccountLinkUniqueIndex(db))
+	require.False(t, db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName))
+
+	var links []AccountLink
+	require.NoError(t, db.Order("id ASC").Find(&links).Error)
+	require.Len(t, links, 2)
+}
+
+func TestEnsureAccountLinkUniqueIndex_ReturnsImmediatelyWhenIndexExists(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	require.NoError(t, db.Exec("CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)").Error)
+	DB = db
+
+	require.NoError(t, db.Create(&AccountLink{
+		UserIDA:      8,
+		UserIDB:      3,
+		Confidence:   0.66,
+		Status:       AccountLinkStatusPending,
+		MatchDetails: `[{"dimension":"ip_exact","score":0.66}]`,
+	}).Error)
+
+	require.NoError(t, EnsureAccountLinkUniqueIndex(db))
+
+	var links []AccountLink
+	require.NoError(t, db.Order("id ASC").Find(&links).Error)
+	require.Len(t, links, 1)
+	require.Equal(t, 8, links[0].UserIDA)
+	require.Equal(t, 3, links[0].UserIDB)
+
+	var count int64
+	require.NoError(t, db.Model(&Option{}).Where("key = ?", accountLinkUniqueIndexNormalizedOptionKey).Count(&count).Error)
+	require.Equal(t, int64(0), count)
+}
+
+func TestEnsureAccountLinkUniqueIndex_StartupCheckLogAndNoFullTableSelectWhenIndexExists(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	var sqlBuf bytes.Buffer
+	gormLogger := logger.New(log.New(&sqlBuf, "", 0), logger.Config{
+		SlowThreshold:             time.Second,
+		LogLevel:                  logger.Info,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  false,
+	})
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: gormLogger})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	require.NoError(t, db.Exec("CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)").Error)
+	DB = db
+
+	var logBuf bytes.Buffer
+	origWriter := gin.DefaultWriter
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter = io.MultiWriter(origWriter, &logBuf)
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultWriter = origWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	require.NoError(t, EnsureAccountLinkUniqueIndex(db))
+
+	logText := logBuf.String()
+	require.Contains(t, logText, "account_links unique index check: index exists, skip startup repair")
+
+	sqlText := strings.ToLower(sqlBuf.String())
+	require.NotContains(t, sqlText, "select * from `account_links`")
+	require.NotContains(t, sqlText, "select * from \"account_links\"")
+}
+
+func TestRepairAccountLinkUniqueIndex_EmitsRepairLogs(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	DB = db
+
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.8, Status: AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error)
+
+	var logBuf bytes.Buffer
+	origWriter := gin.DefaultWriter
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter = io.MultiWriter(origWriter, &logBuf)
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultWriter = origWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	require.NoError(t, RepairAccountLinkUniqueIndex(db))
+
+	logText := logBuf.String()
+	require.Contains(t, logText, "account_links unique index repair: legacy anomalies detected, starting normalization")
+	require.Contains(t, logText, "account_links unique index repair: normalization completed")
+}
+
+func TestEnsureAccountLinkUniqueIndex_DoesNotRepeatRepairAfterManualRepair(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}, &Option{}))
+	DB = db
+
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.8, Status: AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error)
+
+	require.NoError(t, RepairAccountLinkUniqueIndex(db))
+	require.True(t, db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName))
+
+	var logBuf bytes.Buffer
+	origWriter := gin.DefaultWriter
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter = io.MultiWriter(origWriter, &logBuf)
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultWriter = origWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	require.NoError(t, EnsureAccountLinkUniqueIndex(db))
+	require.Contains(t, logBuf.String(), "account_links unique index check: index exists, skip startup repair")
+
+	var links []AccountLink
+	require.NoError(t, db.Order("id ASC").Find(&links).Error)
+	require.Len(t, links, 1)
+}
+
+func TestAccountLinksNeedUniqueIndexNormalization_DetectsReverseAndDuplicatePairs(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}))
+
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.True(t, accountLinksNeedUniqueIndexNormalization(db))
+
+	require.NoError(t, db.Exec("DELETE FROM account_links").Error)
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.NoError(t, db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.5, Status: AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error)
+	require.True(t, accountLinksNeedUniqueIndexNormalization(db))
+}
+
+func TestCreateAccountLinkUniqueIndex_SQLIsCrossDBCompatible(t *testing.T) {
+	origPg := common.UsingPostgreSQL
+	origMy := common.UsingMySQL
+	origSq := common.UsingSQLite
+	defer func() {
+		common.UsingPostgreSQL = origPg
+		common.UsingMySQL = origMy
+		common.UsingSQLite = origSq
+	}()
+
+	type probe struct {
+		usePg bool
+		useMy bool
+		useSq bool
+	}
+	cases := []probe{
+		{usePg: true},
+		{useMy: true},
+		{useSq: true},
+	}
+	for _, tc := range cases {
+		common.UsingPostgreSQL = tc.usePg
+		common.UsingMySQL = tc.useMy
+		common.UsingSQLite = tc.useSq
+
+		db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())), &gorm.Config{})
+		require.NoError(t, err)
+		require.NoError(t, db.AutoMigrate(&AccountLink{}))
+		require.NoError(t, createAccountLinkUniqueIndex(db))
+		require.True(t, db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName))
+	}
+}
+
+func TestCollectAccountLinkNormalizationGroups_BatchesRows(t *testing.T) {
+	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&AccountLink{}))
+
+	for i := range accountLinkNormalizeBatchSize + 5 {
+		userA, userB := NormalizePair(100+i%3, 200+i%3)
+		if i%2 == 0 {
+			userA, userB = userB, userA
+		}
+		require.NoError(t, db.Create(&AccountLink{
+			UserIDA:         userA,
+			UserIDB:         userB,
+			Confidence:      0.4 + float64(i)/1000,
+			MatchDimensions: 1 + i%5,
+			TotalDimensions: 6,
+			Status:          AccountLinkStatusPending,
+			MatchDetails:    `[]`,
+		}).Error)
+	}
+
+	groups, scannedRows, err := collectAccountLinkNormalizationGroups(db, 64)
+	require.NoError(t, err)
+	require.Greater(t, scannedRows, 0)
+	require.Len(t, groups, 3)
+	for _, group := range groups {
+		require.Greater(t, len(group.ids), 0)
+		require.True(t, group.merged.UserIDA < group.merged.UserIDB)
+	}
 }
 
 func TestGetLinksByUserAndCandidates_BatchesAndMapsByPeer(t *testing.T) {
@@ -214,4 +500,61 @@ func TestGetLinksByUserAndCandidates_BatchesAndMapsByPeer(t *testing.T) {
 	require.InDelta(t, 0.91, links[60].Confidence, 0.0001)
 	require.Equal(t, AccountLinkStatusAutoConfirmed, links[70].Status)
 	require.InDelta(t, 0.72, links[70].Confidence, 0.0001)
+}
+
+func BenchmarkEnsureAccountLinkUniqueIndex_StartupPaths(b *testing.B) {
+	origWriter := gin.DefaultWriter
+	common.LogWriterMu.Lock()
+	gin.DefaultWriter = io.Discard
+	common.LogWriterMu.Unlock()
+	b.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultWriter = origWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	makeDB := func(name string, withIndex bool, withLegacy bool) *gorm.DB {
+		dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", name, time.Now().UnixNano())
+		db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+		if err != nil {
+			b.Fatalf("open db failed: %v", err)
+		}
+		if err := db.AutoMigrate(&AccountLink{}, &Option{}); err != nil {
+			b.Fatalf("migrate failed: %v", err)
+		}
+		if withIndex {
+			if err := db.Exec("CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)").Error; err != nil {
+				b.Fatalf("create index failed: %v", err)
+			}
+		}
+		if withLegacy {
+			if err := db.Create(&AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: AccountLinkStatusPending, MatchDetails: `[]`}).Error; err != nil {
+				b.Fatalf("seed row1 failed: %v", err)
+			}
+			if err := db.Create(&AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.8, Status: AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error; err != nil {
+				b.Fatalf("seed row2 failed: %v", err)
+			}
+		}
+		return db
+	}
+
+	b.Run("index_exists_fast_return", func(b *testing.B) {
+		db := makeDB("bench_index_exists", true, false)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := EnsureAccountLinkUniqueIndex(db); err != nil {
+				b.Fatalf("EnsureAccountLinkUniqueIndex failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("legacy_detected_skip_heavy", func(b *testing.B) {
+		db := makeDB("bench_legacy_detect", false, true)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if err := EnsureAccountLinkUniqueIndex(db); err != nil {
+				b.Fatalf("EnsureAccountLinkUniqueIndex failed: %v", err)
+			}
+		}
+	})
 }

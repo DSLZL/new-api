@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,6 +37,7 @@ import (
 )
 
 var fingerprintWeightsUpdateMu sync.Mutex
+var fingerprintAccountLinksRepairRunning atomic.Bool
 
 // FPDashboard GET /api/admin/fingerprint/dashboard
 func FPDashboard(c *gin.Context) {
@@ -159,18 +161,14 @@ func FPGetUserAssociations(c *gin.Context) {
 	minConf, _ := strconv.ParseFloat(c.DefaultQuery("min_confidence", "0.3"), 64)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	refresh := c.DefaultQuery("refresh", "false") == "true"
-	includeDetails := c.DefaultQuery("include_details", "false") == "true"
-	includeSharedIPs := c.DefaultQuery("include_shared_ips", "false") == "true"
+	includeDetails := c.DefaultQuery("include_details", "true") == "true"
+	includeSharedIPs := c.DefaultQuery("include_shared_ips", "true") == "true"
 	candidateUserID, _ := strconv.Atoi(c.DefaultQuery("candidate_user_id", "0"))
 
 	if limit < 1 || limit > 100 {
 		limit = 20
 	}
 
-	// ──────────────────────────────────────────────────────────
-	// ★ 改动 1: 读取 device_profile_id（来自 user_device_profiles 表）
-	//           替代原来的 fingerprint_id（来自 user_fingerprints 表）
-	// ──────────────────────────────────────────────────────────
 	dpIDStr := c.Query("device_profile_id")
 	dpID := int64(0)
 	if dpIDStr != "" {
@@ -182,11 +180,7 @@ func FPGetUserAssociations(c *gin.Context) {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────
-	// ★ 改动 2: 查 user_device_profiles 表，转为 Fingerprint 结构
-	// ──────────────────────────────────────────────────────────
-	var baseFingerprint *model.Fingerprint // nil = 使用默认逻辑（自动选最近指纹）
-
+	var baseFingerprint *model.Fingerprint
 	if dpID > 0 {
 		profile := model.GetDeviceProfileByID(dpID)
 		if profile == nil {
@@ -203,15 +197,9 @@ func FPGetUserAssociations(c *gin.Context) {
 			})
 			return
 		}
-
-		// 转为 Fingerprint 结构，作为比对基准
 		baseFingerprint = model.DeviceProfileToFingerprint(profile)
 	}
 
-	// ──────────────────────────────────────────────────────────
-	// ★ 改动 3: 传 *model.Fingerprint 而非 int64 fpID
-	//           service.QueryUserAssociations 签名需同步修改（见下方说明）
-	// ──────────────────────────────────────────────────────────
 	mode := c.DefaultQuery("mode", "fast")
 	targetLimit, _ := strconv.Atoi(c.DefaultQuery("target_fp_limit", "0"))
 	candidateLimit, _ := strconv.Atoi(c.DefaultQuery("candidate_fp_limit", "0"))
@@ -219,27 +207,16 @@ func FPGetUserAssociations(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Duration(queryTimeoutSec)*time.Second)
 	defer cancel()
 
-	type assocQueryResult struct {
-		result *service.AssociationResult
-		err    error
-	}
-	resCh := make(chan assocQueryResult, 1)
-	go func() {
-		result, err := service.QueryUserAssociationsWithOptions(targetUserID, minConf, limit, refresh, baseFingerprint, &service.AssociationQueryOptions{
-			IncludeDetails:            includeDetails,
-			IncludeSharedIPs:          includeSharedIPs,
-			CandidateUserID:           candidateUserID,
-			Mode:                      mode,
-			TargetFingerprintLimit:    targetLimit,
-			CandidateFingerprintLimit: candidateLimit,
-		})
-		resCh <- assocQueryResult{result: result, err: err}
-	}()
-
-	var result *service.AssociationResult
-	select {
-	case <-ctx.Done():
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	result, err := service.QueryUserAssociationsWithOptions(ctx, targetUserID, minConf, limit, refresh, baseFingerprint, &service.AssociationQueryOptions{
+		IncludeDetails:            includeDetails,
+		IncludeSharedIPs:          includeSharedIPs,
+		CandidateUserID:           candidateUserID,
+		Mode:                      mode,
+		TargetFingerprintLimit:    targetLimit,
+		CandidateFingerprintLimit: candidateLimit,
+	})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
 			c.JSON(http.StatusGatewayTimeout, gin.H{
 				"success":    false,
 				"message":    "association query timeout",
@@ -247,21 +224,16 @@ func FPGetUserAssociations(c *gin.Context) {
 			})
 			return
 		}
-		c.JSON(http.StatusRequestTimeout, gin.H{"success": false, "message": "request cancelled"})
-		return
-	case queryRes := <-resCh:
-		if queryRes.err != nil {
-			// 区分"无数据"与"真正的服务器错误"
-			c.JSON(http.StatusOK, gin.H{
-				"success": true,
-				"data": gin.H{
-					"associations": []any{},
-					"message":      queryRes.err.Error(),
-				},
-			})
+		if errors.Is(err, context.Canceled) {
+			c.JSON(http.StatusRequestTimeout, gin.H{"success": false, "message": "request cancelled"})
 			return
 		}
-		result = queryRes.result
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success":    false,
+			"message":    "association query failed",
+			"error_code": "ASSOCIATION_QUERY_FAILED",
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -269,6 +241,7 @@ func FPGetUserAssociations(c *gin.Context) {
 		"data":    result,
 	})
 }
+
 
 // FPGetWeights GET /api/admin/fingerprint/weights
 func FPGetWeights(c *gin.Context) {
@@ -582,6 +555,22 @@ func FPCompareUsers(c *gin.Context) {
 			"user_b_info":        getUserBriefByID(req.UserB),
 		},
 	})
+}
+
+// FPRepairAccountLinks POST /api/admin/fingerprint/account-links/repair
+func FPRepairAccountLinks(c *gin.Context) {
+	if !fingerprintAccountLinksRepairRunning.CompareAndSwap(false, true) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": "account_links repair already running"})
+		return
+	}
+	defer fingerprintAccountLinksRepairRunning.Store(false)
+
+	if err := model.RepairAccountLinkUniqueIndex(model.DB); err != nil {
+		common.SysError("failed to repair account_links unique index: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "account_links repair failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "account_links repair completed"})
 }
 
 // FPTriggerFullScan POST /api/admin/fingerprint/scan

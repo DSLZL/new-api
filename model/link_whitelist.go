@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"time"
 )
 
@@ -46,8 +47,19 @@ func IsWhitelisted(userA, userB int) bool {
 
 // GetWhitelistedPairs 获取指定用户的所有白名单对端用户
 func GetWhitelistedPairs(userID int) map[int]bool {
+	return GetWhitelistedPairsWithContext(context.Background(), userID)
+}
+
+func GetWhitelistedPairsWithContext(ctx context.Context, userID int) map[int]bool {
 	var whitelist []LinkWhitelist
-	DB.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Find(&whitelist)
+	db := DB
+	if db == nil {
+		return map[int]bool{}
+	}
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	db.Where("user_id_a = ? OR user_id_b = ?", userID, userID).Find(&whitelist)
 
 	result := make(map[int]bool)
 	for _, wl := range whitelist {

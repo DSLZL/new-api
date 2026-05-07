@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -201,9 +202,13 @@ func SessionGapAnalysis(sessionsA, sessionsB []SessionWindow) GapResult {
 
 // ComputeTimeSimilarity 基于最近指纹上报时间构建活跃模式相似度。
 func ComputeTimeSimilarity(userA, userB int) float64 {
+	return ComputeTimeSimilarityWithContext(context.Background(), userA, userB)
+}
+
+func ComputeTimeSimilarityWithContext(ctx context.Context, userA, userB int) float64 {
 	if common.FingerprintEnableTemporalPrecomputeRead {
-		profileA := model.GetLatestTemporalProfile(userA)
-		profileB := model.GetLatestTemporalProfile(userB)
+		profileA := model.GetLatestTemporalProfileWithContext(ctx, userA)
+		profileB := model.GetLatestTemporalProfileWithContext(ctx, userB)
 		binsA := parseTemporalBins(profileA)
 		binsB := parseTemporalBins(profileB)
 		if len(binsA) == temporalDefaultBins && len(binsB) == temporalDefaultBins &&
@@ -213,7 +218,7 @@ func ComputeTimeSimilarity(userA, userB int) float64 {
 		}
 	}
 
-	tsA, tsB := getUserFingerprintTimestamps(userA, userB, 80)
+	tsA, tsB := getUserFingerprintTimestampsWithContext(ctx, userA, userB, 80)
 	if len(tsA) < temporalMinSampleCount || len(tsB) < temporalMinSampleCount {
 		return 0
 	}
@@ -225,9 +230,13 @@ func ComputeTimeSimilarity(userA, userB int) float64 {
 
 // CheckMutualExclusionByUsers 基于最近指纹上报时间统计互斥切换。
 func CheckMutualExclusionByUsers(userA, userB, windowMinutes int) int {
+	return CheckMutualExclusionByUsersWithContext(context.Background(), userA, userB, windowMinutes)
+}
+
+func CheckMutualExclusionByUsersWithContext(ctx context.Context, userA, userB, windowMinutes int) int {
 	if common.FingerprintEnableTemporalPrecomputeRead {
-		sessionsA := toSessionWindows(model.GetLatestUserSessions(userA, 200))
-		sessionsB := toSessionWindows(model.GetLatestUserSessions(userB, 200))
+		sessionsA := toSessionWindows(model.GetLatestUserSessionsWithContext(ctx, userA, 200))
+		sessionsB := toSessionWindows(model.GetLatestUserSessionsWithContext(ctx, userB, 200))
 		if len(sessionsA) >= temporalMinSampleCount && len(sessionsB) >= temporalMinSampleCount {
 			result := SessionGapAnalysis(sessionsA, sessionsB)
 			if result.SwitchCount > 0 {
@@ -236,7 +245,7 @@ func CheckMutualExclusionByUsers(userA, userB, windowMinutes int) int {
 		}
 	}
 
-	tsA, tsB := getUserFingerprintTimestamps(userA, userB, 120)
+	tsA, tsB := getUserFingerprintTimestampsWithContext(ctx, userA, userB, 120)
 	if len(tsA) < temporalMinSampleCount || len(tsB) < temporalMinSampleCount {
 		return 0
 	}
@@ -254,8 +263,12 @@ func normalizeMutualExclusion(switchCount int) float64 {
 }
 
 func getUserFingerprintTimestamps(userA, userB, limit int) ([]time.Time, []time.Time) {
-	fpsA := model.GetLatestFingerprints(userA, limit)
-	fpsB := model.GetLatestFingerprints(userB, limit)
+	return getUserFingerprintTimestampsWithContext(context.Background(), userA, userB, limit)
+}
+
+func getUserFingerprintTimestampsWithContext(ctx context.Context, userA, userB, limit int) ([]time.Time, []time.Time) {
+	fpsA := model.GetLatestFingerprintsWithContext(ctx, userA, limit)
+	fpsB := model.GetLatestFingerprintsWithContext(ctx, userB, limit)
 	if len(fpsA) == 0 || len(fpsB) == 0 {
 		return nil, nil
 	}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -58,10 +59,10 @@ type ExistingLinkInfo struct {
 // AssociationQueryOptions 关联查询选项
 // 默认行为：包含 details 与 shared_ips，且不过滤候选用户。
 type AssociationQueryOptions struct {
-	IncludeDetails    bool
-	IncludeSharedIPs  bool
-	CandidateUserID   int
-	Mode              string
+	IncludeDetails            bool
+	IncludeSharedIPs          bool
+	CandidateUserID           int
+	Mode                      string
 	TargetFingerprintLimit    int
 	CandidateFingerprintLimit int
 }
@@ -72,12 +73,12 @@ const (
 )
 
 const (
-	associationCacheVersion      = "v2"
-	associationCacheBaseMode     = "default"
-	associationCacheBasePrefix   = "dp"
-	associationCacheNegative     = "__none__"
-	associationCacheTTL          = 30 * time.Minute
-	associationNegativeCacheTTL  = 5 * time.Minute
+	associationCacheVersion     = "v2"
+	associationCacheBaseMode    = "default"
+	associationCacheBasePrefix  = "dp"
+	associationCacheNegative    = "__none__"
+	associationCacheTTL         = 30 * time.Minute
+	associationNegativeCacheTTL = 5 * time.Minute
 )
 
 func normalizeAssociationMinConfidence(val float64) float64 {
@@ -166,10 +167,10 @@ func buildAssociationCacheNegativePayload(candidatesFound int) string {
 
 func normalizeAssociationQueryOptions(options *AssociationQueryOptions) AssociationQueryOptions {
 	normalized := AssociationQueryOptions{
-		IncludeDetails:          false,
-		IncludeSharedIPs:        false,
-		Mode:                    associationModeFast,
-		TargetFingerprintLimit:  common.GetFingerprintAssociationFastTargetLimit(),
+		IncludeDetails:            true,
+		IncludeSharedIPs:          true,
+		Mode:                      associationModeFast,
+		TargetFingerprintLimit:    common.GetFingerprintAssociationFastTargetLimit(),
 		CandidateFingerprintLimit: common.GetFingerprintAssociationFastCandidateLimit(),
 	}
 	if options == nil {
@@ -235,16 +236,18 @@ func buildAssociationCacheKey(targetUserID int, minConfidence float64, limit int
 //
 // ═══════════════════════════════════════════════════════════════════════
 func QueryUserAssociations(
+	ctx context.Context,
 	targetUserID int,
 	minConfidence float64,
 	limit int,
 	forceRefresh bool,
-	baseFingerprint *model.Fingerprint, // ★ 改动: int64 → *model.Fingerprint
+	baseFingerprint *model.Fingerprint,
 ) (*AssociationResult, error) {
-	return QueryUserAssociationsWithOptions(targetUserID, minConfidence, limit, forceRefresh, baseFingerprint, nil)
+	return QueryUserAssociationsWithOptions(ctx, targetUserID, minConfidence, limit, forceRefresh, baseFingerprint, nil)
 }
 
 func QueryUserAssociationsWithOptions(
+	ctx context.Context,
 	targetUserID int,
 	minConfidence float64,
 	limit int,
@@ -252,10 +255,16 @@ func QueryUserAssociationsWithOptions(
 	baseFingerprint *model.Fingerprint,
 	options *AssociationQueryOptions,
 ) (*AssociationResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	startTime := time.Now()
 
 	if !common.FingerprintEnabled {
 		return nil, fmt.Errorf("fingerprint system is not enabled")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	normalizedOptions := normalizeAssociationQueryOptions(options)
@@ -279,8 +288,12 @@ func QueryUserAssociationsWithOptions(
 		cached, err := common.RedisGet(cacheKey)
 		if err == nil && cached != "" {
 			if candidatesFound, ok := parseAssociationCacheNegativePayload(cached); ok {
+				targetUser, briefErr := getUserBriefE(ctx, targetUserID)
+				if briefErr != nil {
+					return nil, fmt.Errorf("failed to load target user brief: %w", briefErr)
+				}
 				return &AssociationResult{
-					TargetUser:      getUserBrief(targetUserID),
+					TargetUser:      targetUser,
 					Associations:    []AssociationItem{},
 					AnalyzedAt:      time.Now(),
 					CandidatesFound: candidatesFound,
@@ -308,20 +321,30 @@ func QueryUserAssociationsWithOptions(
 		// ★ 管理员指定了某个设备档案，controller 已转为 Fingerprint，直接用
 		targetFPs = []*model.Fingerprint{baseFingerprint}
 	} else {
-		// 默认逻辑：先查流水表
-		targetFPs = model.GetLatestFingerprints(targetUserID, normalizedOptions.TargetFingerprintLimit)
+		fps, err := model.GetLatestFingerprintsWithContextE(ctx, targetUserID, normalizedOptions.TargetFingerprintLimit)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load target fingerprints: %w", err)
+		}
+		targetFPs = fps
 		// ★ 新增兜底: 流水表可能已被定期清理，改从设备档案表获取
 		if len(targetFPs) == 0 {
-			targetFPs = model.GetDeviceProfilesAsFingerprints(targetUserID)
+			targetFPs = model.GetDeviceProfilesAsFingerprintsWithContext(ctx, targetUserID)
 			if len(targetFPs) > normalizedOptions.TargetFingerprintLimit {
 				targetFPs = targetFPs[:normalizedOptions.TargetFingerprintLimit]
 			}
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(targetFPs) == 0 {
+		targetUser, briefErr := getUserBriefE(ctx, targetUserID)
+		if briefErr != nil {
+			return nil, fmt.Errorf("failed to load target user brief: %w", briefErr)
+		}
 		return &AssociationResult{
-			TargetUser:      getUserBrief(targetUserID),
+			TargetUser:      targetUser,
 			Associations:    []AssociationItem{},
 			AnalyzedAt:      time.Now(),
 			CandidatesFound: 0,
@@ -334,19 +357,26 @@ func QueryUserAssociationsWithOptions(
 	// ──────────────────────────────────────────────────────────
 	candidateSet := make(map[int]struct{})
 	for _, fp := range targetFPs {
-		collectCandidatesByFingerprint(targetUserID, fp, candidateSet, candidateUserID)
+		collectCandidatesByFingerprint(ctx, targetUserID, fp, candidateSet, candidateUserID)
 		if len(candidateSet) >= common.GetFingerprintCandidateMaxTotal() {
 			break
 		}
 	}
 
 	// 通过IP历史交叉查找（低区分度来源，使用更严格预算）
-	collectCandidatesByIPHistory(targetUserID, candidateSet, candidateUserID)
+	collectCandidatesByIPHistory(ctx, targetUserID, candidateSet, candidateUserID)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// 4. 移除白名单
-	whitelisted := model.GetWhitelistedPairs(targetUserID)
+	whitelisted := model.GetWhitelistedPairsWithContext(ctx, targetUserID)
 	for uid := range whitelisted {
 		delete(candidateSet, uid)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	// ──────────────────────────────────────────────────────────
@@ -354,15 +384,15 @@ func QueryUserAssociationsWithOptions(
 	//    ★ 改动: 先粗算候选结果，再对最终结果补充 user/link/sharedIPs
 	// ──────────────────────────────────────────────────────────
 	type associationCandidateResult struct {
-		CandidateUserID    int
-		Confidence         float64
-		Tier               string
-		Explanation        string
-		MatchedDimensions  []string
-		RiskLevel          string
-		MatchDimensions    int
-		TotalDimensions    int
-		Details            []DimensionMatch
+		CandidateUserID   int
+		Confidence        float64
+		Tier              string
+		Explanation       string
+		MatchedDimensions []string
+		RiskLevel         string
+		MatchDimensions   int
+		TotalDimensions   int
+		Details           []DimensionMatch
 	}
 	candidateResults := make([]associationCandidateResult, 0, len(candidateSet))
 
@@ -370,10 +400,13 @@ func QueryUserAssociationsWithOptions(
 		if candidateUserID > 0 && candidateUID != candidateUserID {
 			continue
 		}
-		candidateFPs := model.GetLatestFingerprints(candidateUID, normalizedOptions.CandidateFingerprintLimit)
+		candidateFPs, err := model.GetLatestFingerprintsWithContextE(ctx, candidateUID, normalizedOptions.CandidateFingerprintLimit)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load candidate fingerprints for user %d: %w", candidateUID, err)
+		}
 		// ★ 新增兜底: 候选用户流水表也可能为空
 		if len(candidateFPs) == 0 {
-			candidateFPs = model.GetDeviceProfilesAsFingerprints(candidateUID)
+			candidateFPs = model.GetDeviceProfilesAsFingerprintsWithContext(ctx, candidateUID)
 			if len(candidateFPs) > normalizedOptions.CandidateFingerprintLimit {
 				candidateFPs = candidateFPs[:normalizedOptions.CandidateFingerprintLimit]
 			}
@@ -392,7 +425,10 @@ func QueryUserAssociationsWithOptions(
 
 		for _, tFP := range targetFPs {
 			for _, cFP := range candidateFPs {
-				similarity := CalculateSimilarity(tFP, cFP, targetUserID, candidateUID)
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				similarity := CalculateSimilarityWithContext(ctx, tFP, cFP, targetUserID, candidateUID)
 				if similarity.Score > bestConf {
 					bestConf = similarity.Score
 					bestTier = similarity.Tier
@@ -439,12 +475,26 @@ func QueryUserAssociationsWithOptions(
 		filteredCandidates = filteredCandidates[:normalizedLimit]
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	finalCandidateUserIDs := make([]int, 0, len(filteredCandidates))
 	for _, candidate := range filteredCandidates {
 		finalCandidateUserIDs = append(finalCandidateUserIDs, candidate.CandidateUserID)
 	}
-	candidateUserBriefs := getUserBriefs(finalCandidateUserIDs)
-	linksByPeer := model.GetLinksByUserAndCandidates(targetUserID, finalCandidateUserIDs)
+	candidateUserBriefs, err := getUserBriefsE(ctx, finalCandidateUserIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load candidate user briefs: %w", err)
+	}
+	linksByPeer, err := model.GetLinksByUserAndCandidatesWithContextE(ctx, targetUserID, finalCandidateUserIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load existing account links: %w", err)
+	}
+	targetUser, err := getUserBriefE(ctx, targetUserID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load target user brief: %w", err)
+	}
 
 	associations := make([]AssociationItem, 0, len(filteredCandidates))
 	for _, candidate := range filteredCandidates {
@@ -465,7 +515,7 @@ func QueryUserAssociationsWithOptions(
 			item.Details = candidate.Details
 		}
 		if includeSharedIPs {
-			item.SharedIPs = GetSharedIPs(targetUserID, candidate.CandidateUserID)
+			item.SharedIPs = GetSharedIPsWithContext(ctx, targetUserID, candidate.CandidateUserID)
 		}
 		if link := linksByPeer[candidate.CandidateUserID]; link != nil {
 			item.ExistingLink = &ExistingLinkInfo{
@@ -477,7 +527,7 @@ func QueryUserAssociationsWithOptions(
 	}
 
 	fullResult := &AssociationResult{
-		TargetUser:      getUserBrief(targetUserID),
+		TargetUser:      targetUser,
 		Associations:    associations,
 		AnalyzedAt:      time.Now(),
 		CandidatesFound: len(candidateSet),
@@ -498,10 +548,10 @@ func QueryUserAssociationsWithOptions(
 	return fullResult, nil
 }
 
-func getUserBriefs(userIDs []int) map[int]UserBrief {
+func getUserBriefsE(ctx context.Context, userIDs []int) (map[int]UserBrief, error) {
 	briefs := make(map[int]UserBrief)
 	if len(userIDs) == 0 || model.DB == nil {
-		return briefs
+		return briefs, nil
 	}
 
 	uniqueIDs := make([]int, 0, len(userIDs))
@@ -517,12 +567,16 @@ func getUserBriefs(userIDs []int) map[int]UserBrief {
 		uniqueIDs = append(uniqueIDs, userID)
 	}
 	if len(uniqueIDs) == 0 {
-		return briefs
+		return briefs, nil
 	}
 
+	db := model.DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	var users []model.User
-	if err := model.DB.Where("id IN ?", uniqueIDs).Find(&users).Error; err != nil {
-		return briefs
+	if err := db.Where("id IN ?", uniqueIDs).Find(&users).Error; err != nil {
+		return briefs, err
 	}
 	for _, user := range users {
 		briefs[user.Id] = UserBrief{
@@ -537,18 +591,22 @@ func getUserBriefs(userIDs []int) map[int]UserBrief {
 			Group:       user.Group,
 		}
 	}
-	return briefs
+	return briefs, nil
 }
 
-func getUserBrief(userID int) UserBrief {
+func getUserBriefE(ctx context.Context, userID int) (UserBrief, error) {
 	if userID <= 0 {
-		return UserBrief{}
+		return UserBrief{}, nil
 	}
-	brief, ok := getUserBriefs([]int{userID})[userID]
+	briefs, err := getUserBriefsE(ctx, []int{userID})
+	if err != nil {
+		return UserBrief{}, err
+	}
+	brief, ok := briefs[userID]
 	if !ok {
-		return UserBrief{ID: userID}
+		return UserBrief{ID: userID}, nil
 	}
-	return brief
+	return brief, nil
 }
 
 func confidenceToRiskLevel(conf float64) string {

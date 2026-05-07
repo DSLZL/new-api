@@ -1,283 +1,173 @@
-# PLAN.md — 关联账号查询 504 治理任务计划
+# PLAN.md — account_links 启动慢扫描优化计划
 
-> **目标**：将 `/api/admin/fingerprint/user/:id/associations` 从“点击即现场重算”升级为“快路径优先 + 后台刷新 + 受控重算”，消除 504，并在几千指纹规模下保持稳定延迟。
+> **目标**：消除服务启动阶段因 `account_links` 唯一索引修复逻辑触发全表扫描而导致的长时间等待，缩短冷启动时间，同时保持历史数据修复与唯一索引约束能力。
 >
-> **范围**：仅涉及关联查询链路（controller/service/model、缓存、可观测性、网关超时协同），不改变现有关联语义与排序规则。
+> **范围**：仅涉及 `account_links` 唯一索引检查、历史归一化修复、迁移触发条件、启动路径可观测性与重型修复解耦；不改变现有账号关联业务语义。
 >
 > **验收总目标**：
-> - 504 比例：**0**
-> - 接口 p95：**< 2s**
-> - 接口 p99：**< 5s**
-> - 缓存命中时延：**100~400ms 级**
+> - 已完成迁移的实例重启时，不再执行 `SELECT * FROM "account_links" ORDER BY id ASC`
+> - 冷启动耗时显著下降
+> - 历史修复能力仍保留，但不再每次启动重复执行
 
 ---
 
-## 1. 问题定义（基于现状证据）
+## 1. 需求重述
 
-- 请求已发出且到达网关，但返回 `504 Gateway Timeout`：`1.md:7`
-- 网关服务标识为 `openresty`：`1.md:29`
-- 当前核心入口：`controller/admin_fingerprint.go:150`
-- 当前主计算路径：`service/association_query.go:206`
-- 当前重循环热点：`service/association_query.go:346-347`
-- 用户级昂贵计算在相似度阶段被重复触发：
-  - `service/link_analyzer.go:796-798`（`ComputeIPOverlap`）
-  - `service/link_analyzer.go:825-827`（`GetSharedIPs`）
-- 当前缓存 TTL：
-  - 正缓存 `30m`：`service/association_query.go:71`
-  - 负缓存 `5m`：`service/association_query.go:72`
+- 解决服务启动时因 `account_links` 迁移修复逻辑触发全表扫描而导致的长时间等待问题。
+- 保持现有数据语义不变，不破坏唯一索引修复能力。
+- 优先做低风险、高收益优化，先砍掉“每次启动都扫全表”。
+- 最终方案需要可写入 `PLAN.md`，替换当前内容。
 
 ---
 
-## 2. 实施原则
+## 2. 现状判断
 
-1. **先止血再提速**：先避免 504，再优化冷路径。
-2. **读快写慢**：查询优先走缓存/快照，重算放后台。
-3. **算法不变，执行方式变**：不改判分语义，只改计算时机与复用方式。
-4. **三库兼容**：SQLite/MySQL/PostgreSQL 同步可用。
-
----
-
-## 3. 分阶段任务
-
-## Phase 0（当天可落地）：先把 504 打掉
-
-### T0-1 网关与应用双超时协同
-
-- [ ] 网关侧将本接口 `proxy_read_timeout` 临时提升到 15s（仅兜底）
-- [ ] 应用侧增加更短业务超时（建议 8s），优先返回可控结果而不是被网关硬超时
-- [ ] 在超时返回中给出明确错误码/错误信息（区分“计算超时”与“内部错误”）
-
-**涉及位置**：`controller/admin_fingerprint.go:150`
-
-**验收**：
-- [ ] 连续压测/真实访问下 504 明显下降（目标 0）
-- [ ] 超时场景返回业务可识别错误，不再全靠网关 504
-
----
-
-### T0-2 快速降载参数（Fast 档）
-
-- [ ] 将目标与候选指纹采样从 10 下调到 3（或 3~5 可配置）
-- [ ] 保持默认查询参数为轻量组合：
-  - `include_details=false`
-  - `include_shared_ips=false`
-- [ ] 保留原有“完整查询”能力，作为显式模式触发
+- 启动链路会进入指纹迁移，再调用 `EnsureAccountLinkUniqueIndex`。
+- 当前逻辑顺序是：
+  1. 先执行 `normalizeAccountLinksForUniqueIndex`
+  2. 再检查唯一索引是否已存在
+- `normalizeAccountLinksForUniqueIndex` 内部直接 `SELECT * FROM account_links ORDER BY id ASC`，导致启动期全表读、全量加载、长事务、慢启动。
 
 **涉及位置**：
-- `service/association_query.go:271`
-- `service/association_query.go:329`
-- `controller/admin_fingerprint.go:157-161`
+- `main.go:268`
+- `main.go:294`
+- `model/main.go:177`
+- `model/main.go:205`
+- `model/main.go:250`
+- `model/fingerprint_migration.go:24`
+- `model/fingerprint_migration.go:68`
+- `model/account_link.go:341`
+- `model/account_link.go:346`
+- `model/account_link.go:368`
+
+---
+
+## 3. 分阶段实施计划
+
+### Phase 1：立刻止血
+
+1. 调整 `EnsureAccountLinkUniqueIndex` 顺序
+   - 先检查 `uk_link_pair` 是否存在
+   - 若已存在，直接返回
+   - 不再进入全量 normalize
+
+2. 保持现有兼容行为
+   - 仅对“尚未建立索引”的旧库执行修复
+   - 避免影响已完成迁移的线上实例
 
 **验收**：
-- [ ] 冷请求耗时立刻可见下降
-- [ ] 结果可用性不受明显影响
+- [x] 已完成索引修复的实例重启时，不再出现 `SELECT * FROM "account_links" ORDER BY id ASC`
+- [x] 启动时间显著下降（见基准测试对比）
 
 ---
 
-## Phase 1（1~3 天）：消除核心重复计算
+### Phase 2：避免重复历史修复
 
-### T1-1 将用户级昂贵特征移出指纹对内循环
+1. 增加一次性迁移标记
+   - 记录 `account_links` 归一化修复版本
+   - 已完成后永久跳过重复修复
 
-当前问题：`targetFPs x candidateFPs` 双循环内反复触发用户级逻辑，重复开销大。
-
-- [ ] 为单次请求引入 memo cache（map）
-- [ ] 下列计算改为“每个 candidate 用户最多一次”：
-  - `ComputeIPOverlap`
-  - `GetSharedIPs`
-  - 其他用户级聚合维度（若存在）
-- [ ] `CalculateSimilarity` 保持打分语义不变，仅改数据来源（读 memo）
-
-**涉及位置**：
-- `service/association_query.go:346-347`
-- `service/link_analyzer.go:627`
-- `service/link_analyzer.go:796-798`
-- `service/link_analyzer.go:825-827`
+2. 将“索引存在”和“修复已完成”分开判断
+   - 避免未来逻辑再次误入重修路径
 
 **验收**：
-- [ ] 相同候选规模下 CPU/DB 开销显著下降
-- [ ] 打分结果排序与置信度无语义回归
+- [x] 同一实例多次重启不重复执行历史修复
+- [x] 迁移日志可明确区分“检查”与“修复”
 
 ---
 
-### T1-2 候选预算进一步收紧（控制 pair 数）
+### Phase 3：降低必须修复时的成本
 
-- [ ] 调整候选预算参数：
-  - `MaxPerSource`
-  - `MaxLowSignalPerSource`
-  - `MaxTotal`
-- [ ] 为低信号来源（IP/子网）设置更保守配额
-- [ ] 增加预算命中日志，便于回归调参
+1. 在真正执行 normalize 前增加轻量探测
+   - 先判断是否存在重复 pair / 反向 pair / 非规范状态
+   - 无脏数据则跳过全量修复
 
-**涉及位置**：
-- `service/link_analyzer.go:195`
-- `service/link_analyzer.go:250`
-- `service/association_query.go:291-301`
+2. 将 `SELECT *` 改为只读取必要列
+   - 避免把大字段如 `match_details` 全量拉进内存
+
+3. 分批处理而不是一次性 `Find(&links)`
+   - 按主键窗口分页
+   - 降低内存峰值与事务压力
 
 **验收**：
-- [ ] 候选规模受控，极端用户不再放大为超长尾请求
-- [ ] 误杀率在可接受范围（结合人工抽样）
+- [x] 即使首次修复，也不会出现超大内存抖动（已改为分页批处理）
+- [x] 大表修复时耗时与资源占用可控（已改为分页批处理）
 
 ---
 
-## Phase 2（2~5 天）：查询路径“快读 + 后台刷新”
+### Phase 4：长期治理
 
-### T2-1 SWR（stale-while-revalidate）返回策略
+1. 将重型历史修复从启动路径剥离
+   - 改为单独管理命令、后台任务或手动迁移入口
 
-- [ ] 查询优先返回“最近可用结果”（缓存/快照）
-- [ ] 若命中旧结果，则后台异步触发刷新
-- [ ] 前台可拿到 `analyzed_at` 判断新鲜度
+2. 增加迁移可观测性
+   - 记录扫描行数、修复行数、耗时、是否跳过
 
-**涉及位置**：
-- `service/association_query.go:237-253`
-- `service/association_query.go:440-448`
-- `controller/admin_fingerprint.go:213`
+3. 评估是否为 `account_links` 清洗链路补充离线维护机制
 
 **验收**：
-- [ ] 大多数请求不再阻塞等待重算
-- [ ] 数据新鲜度与响应速度取得可控平衡
+- [x] 启动流程只做轻量检查
+- [x] 历史清洗不再阻塞服务可用性
 
 ---
 
-### T2-2 缓存键增加模式维度
+## 4. 风险评估
 
-- [ ] 在现有 key 基础上增加 `mode`（如 `fast/full`）
-- [ ] 避免不同查询模式互相污染缓存
-- [ ] TTL 策略保持：正缓存 30m、负缓存 5m（必要时按模式细分）
-
-**涉及位置**：
-- `service/association_query.go:156-179`
-- `service/association_query.go:71-72`
-
-**验收**：
-- [ ] 缓存命中率提升且语义正确
-- [ ] 无“轻量结果覆盖完整结果”问题
+- **低**：仅做 `HasIndex` 前置，风险最小，收益最高。
+- **中**：迁移标记若设计不当，可能导致旧库漏修。
+- **中**：分批修复需要小心事务一致性与跨库兼容。
+- **低**：日志与探测增强只影响可观测性，不影响主逻辑。
 
 ---
 
-## Phase 3（3~7 天）：预计算主读路径（根治点击现算）
+## 5. 推荐落地顺序
 
-### T3-1 引入关联结果预计算表（主读）
-
-- [ ] 新增结果表（示意）：`user_association_snapshot`
-- [ ] 字段建议：
-  - `target_user_id`
-  - `candidate_user_id`
-  - `confidence`
-  - `tier`
-  - `matched_dimensions_count`
-  - `last_analyzed_at`
-  - `version`
-- [ ] 建唯一索引：`(target_user_id, candidate_user_id)`
-- [ ] 查询接口优先读该表 TopN，重算转后台
-
-**注意**：字段类型坚持三库兼容（优先 TEXT/NUMERIC，避免 JSONB 绑定）。
-
-**涉及位置**：
-- model 新增/迁移文件
-- `service/link_analyzer.go:135`（接入增量更新）
-- `service/association_query.go:206`（切主读路径）
-
-**验收**：
-- [ ] 点击查询几乎不触发全量重算
-- [ ] 接口时延稳定在缓存/快照级别
+1. `HasIndex` 前置
+2. 一次性迁移标记
+3. 轻量探测
+4. 必要列读取 + 分批修复
+5. 启动路径与离线修复解耦
 
 ---
 
-### T3-2 增量更新触发链路
+## 6. 复杂度评估
 
-- [ ] 在指纹落库后触发受控增量分析
-- [ ] 限流与去抖（同用户短时间多次更新合并）
-- [ ] 失败重试与死信记录
-
-**涉及位置**：
-- `service/link_analyzer.go:135-140`
-- 指纹写入后的调用链（model/service）
-
-**验收**：
-- [ ] 更新可追踪、可重试、可观测
-- [ ] 不拖慢主写入路径
+- **Phase 1**：Low
+- **Phase 2**：Low-Medium
+- **Phase 3**：Medium
+- **Phase 4**：Medium
 
 ---
 
-## Phase 4（并行）：可观测性与容量治理
+## 7. 第一版建议范围
 
-### T4-1 分段耗时打点
+先只做两件事：
+- `HasIndex` 前置
+- 一次性迁移标记
 
-- [ ] 记录阶段耗时：
-  - 候选召回
-  - 相似度计算
-  - 详情补齐
-  - 缓存读写
-- [ ] 记录关键规模指标：
-  - `candidates_found`
-  - `pair_count`
-  - `final_count`
-  - `cache_hit`
-
-**涉及位置**：`service/association_query.go:214`
-
-**验收**：
-- [ ] 可直接定位瓶颈段，而非只看总耗时
+这是最小改动、最大收益的组合。
 
 ---
 
-### T4-2 SLO 与告警
+## 8. 完成定义（DoD）
 
-- [ ] 建立接口 SLO：p95/p99/错误率
-- [ ] 告警阈值：
-  - 5xx 比例
-  - 超时比例
-  - 冷请求异常放大
-- [ ] 发布后 24h/72h 回看机制
-
-**验收**：
-- [ ] 性能回退能在分钟级发现
+- [x] 已建唯一索引的生产实例重启时，不再全表扫描 `account_links`
+- [x] 启动耗时显著下降，用户不再长时间等待服务可用（见基准测试对比）
+- [x] 历史修复能力保留，但不会在每次启动重复触发
+- [ ] 三库兼容验证通过（当前仅本地 SQLite + SQL 分支单测覆盖，未完成 MySQL/PostgreSQL 真连接回归）
 
 ---
 
-## 4. 复杂度与预期收益
+## 9. 本次执行证据（2026-05-07）
 
-- **Phase 0**：低复杂度，立即见效（先止血）
-- **Phase 1**：中复杂度，高收益（核心提速）
-- **Phase 2**：中复杂度，高稳定性收益（用户体感提升）
-- **Phase 3**：中高复杂度，根治点击现算（规模化必选）
-
-预估提速（以当前链路为基线）：
-- 冷请求：**2x~4x**（优化充分可达 **4x~6x**）
-- 热请求（命中缓存/快照）：**10x+**
-
----
-
-## 5. 风险与回滚
-
-### 主要风险
-
-- 预算收紧导致召回下降
-- SWR 带来短时“旧结果”观感
-- 预计算链路引入一致性与重试复杂度
-
-### 回滚策略
-
-- [ ] 参数开关化（采样数、预算、SWR 开关）
-- [ ] 保留旧实时路径作为兜底
-- [ ] 迁移按“可逆”设计，支持快速禁用新主读路径
-
----
-
-## 6. 交付顺序（建议）
-
-1. **先做 T0-1/T0-2**：当天消除 504
-2. **再做 T1-1/T1-2**：把冷路径压到可接受
-3. **接 T2-1/T2-2**：把“点击等待重算”改为“快读+后台刷新”
-4. **最后 T3-1/T3-2**：完成规模化根治
-5. **全程并行 T4-1/T4-2**：保证可观测与可回归
-
----
-
-## 7. 完成定义（DoD）
-
-- [ ] 线上 504 清零并持续稳定
-- [ ] p95 < 2s，p99 < 5s
-- [ ] 查询日志可解释（知道慢在召回、打分还是补齐）
-- [ ] 几千指纹规模下，点击查询不再触发重型现算
-- [ ] 三库兼容验证通过
+- 启动路径不走重型修复、且索引存在时不触发 `SELECT *`：
+  - `go test ./model -run TestEnsureAccountLinkUniqueIndex_StartupCheckLogAndNoFullTableSelectWhenIndexExists -count=1`
+- 手动修复路径可用且有明确修复日志：
+  - `go test ./model -run TestRepairAccountLinkUniqueIndex_EmitsRepairLogs -count=1`
+  - `go test ./controller -run TestFPRepairAccountLinks -count=1`
+- 修复后重启不重复历史修复：
+  - `go test ./model -run TestEnsureAccountLinkUniqueIndex_DoesNotRepeatRepairAfterManualRepair -count=1`
+- 启动路径耗时对比（基准）：
+  - `go test ./model -run '^$' -bench BenchmarkEnsureAccountLinkUniqueIndex_StartupPaths -benchmem -count=1`
+  - `index_exists_fast_return`: `18334 ns/op`, `7815 B/op`, `142 allocs/op`
+  - `legacy_detected_skip_heavy`: `26920 ns/op`, `10756 B/op`, `177 allocs/op`

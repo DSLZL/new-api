@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -192,15 +193,18 @@ func appendCandidatesWithBudget(candidateSet map[int]struct{}, ids []int, source
 	return len(candidateSet) >= maxTotal
 }
 
-func collectCandidatesByFingerprint(userID int, fp *model.Fingerprint, candidateSet map[int]struct{}, candidateUserID int) {
+func collectCandidatesByFingerprint(ctx context.Context, userID int, fp *model.Fingerprint, candidateSet map[int]struct{}, candidateUserID int) {
 	if userID <= 0 || fp == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
 		return
 	}
 
 	budget := getFingerprintCandidateBudget()
 	stop := false
 	appendCandidates := func(ids []int, lowSignal bool) {
-		if stop {
+		if stop || (ctx != nil && ctx.Err() != nil) {
 			return
 		}
 		limit := budget.MaxPerSource
@@ -210,53 +214,54 @@ func collectCandidatesByFingerprint(userID int, fp *model.Fingerprint, candidate
 		stop = appendCandidatesWithBudget(candidateSet, ids, limit, userID, candidateUserID, budget.MaxTotal)
 	}
 
-	// ─── 路径1: 设备指纹匹配（正常浏览器模式下高命中率）───
-	appendCandidates(model.FindUsersByDeviceID(fp.LocalDeviceID), false)
-	appendCandidates(model.FindUsersByCanvasHash(fp.CanvasHash), false)
-	appendCandidates(model.FindUsersByWebGLHash(fp.WebGLHash), false)
-	appendCandidates(model.FindUsersByWebGLDeepHash(fp.WebGLDeepHash), false)
-	appendCandidates(model.FindUsersByClientRectsHash(fp.ClientRectsHash), false)
-	appendCandidates(model.FindUsersByMediaDevicesHash(fp.MediaDevicesHash), false)
-	appendCandidates(model.FindUsersByMediaDeviceGroupHash(fp.MediaDeviceGroupHash), false)
-	appendCandidates(model.FindUsersBySpeechVoicesHash(fp.SpeechVoicesHash), false)
-	appendCandidates(model.FindUsersByAudioHash(fp.AudioHash), false)
-	appendCandidates(model.FindUsersByFontsHash(fp.FontsHash), false)
-	appendCandidates(model.FindUsersByCompositeHash(fp.CompositeHash), false)
+	appendCandidates(model.FindUsersByDeviceIDWithContext(ctx, fp.LocalDeviceID), false)
+	appendCandidates(model.FindUsersByCanvasHashWithContext(ctx, fp.CanvasHash), false)
+	appendCandidates(model.FindUsersByWebGLHashWithContext(ctx, fp.WebGLHash), false)
+	appendCandidates(model.FindUsersByWebGLDeepHashWithContext(ctx, fp.WebGLDeepHash), false)
+	appendCandidates(model.FindUsersByClientRectsHashWithContext(ctx, fp.ClientRectsHash), false)
+	appendCandidates(model.FindUsersByMediaDevicesHashWithContext(ctx, fp.MediaDevicesHash), false)
+	appendCandidates(model.FindUsersByMediaDeviceGroupHashWithContext(ctx, fp.MediaDeviceGroupHash), false)
+	appendCandidates(model.FindUsersBySpeechVoicesHashWithContext(ctx, fp.SpeechVoicesHash), false)
+	appendCandidates(model.FindUsersByAudioHashWithContext(ctx, fp.AudioHash), false)
+	appendCandidates(model.FindUsersByFontsHashWithContext(ctx, fp.FontsHash), false)
+	appendCandidates(model.FindUsersByCompositeHashWithContext(ctx, fp.CompositeHash), false)
 
-	// ─── 路径2: 协议层指纹 ───
-	appendCandidates(model.FindUsersByJA3(fp.TLSJA3Hash), false)
+	appendCandidates(model.FindUsersByJA3WithContext(ctx, fp.TLSJA3Hash), false)
 	if common.FingerprintEnableJA4 {
-		appendCandidates(model.FindUsersByJA4(fp.JA4), false)
+		appendCandidates(model.FindUsersByJA4WithContext(ctx, fp.JA4), false)
 	}
-	appendCandidates(model.FindUsersByHTTPHeaderHash(fp.HTTPHeaderHash), false)
+	appendCandidates(model.FindUsersByHTTPHeaderHashWithContext(ctx, fp.HTTPHeaderHash), false)
 	if common.FingerprintEnableDNSLeak {
-		appendCandidates(model.FindUsersByDNSResolverIP(fp.DNSResolverIP), false)
+		appendCandidates(model.FindUsersByDNSResolverIPWithContext(ctx, fp.DNSResolverIP), false)
 	}
 	if common.FingerprintEnableETag {
-		appendCandidates(model.FindUsersByETagID(fp.ETagID), false)
+		appendCandidates(model.FindUsersByETagIDWithContext(ctx, fp.ETagID), false)
 	}
-	appendCandidates(model.FindUsersByPersistentID(fp.PersistentID), false)
+	appendCandidates(model.FindUsersByPersistentIDWithContext(ctx, fp.PersistentID), false)
 
-	// ─── 路径3: IP/子网匹配（无痕模式下的关键发现路径）───
-	// 即使所有浏览器指纹哈希因无痕噪声而不同，
-	// 同一台机器的IP地址不变，仍可发现候选用户。
-	appendCandidates(model.FindUsersByIP(fp.IPAddress), true)
+	appendCandidates(model.FindUsersByIPWithContext(ctx, fp.IPAddress), true)
 	subnet := GetSubnet24(fp.IPAddress)
 	if subnet != "" {
-		appendCandidates(model.FindUsersByIPSubnet(subnet), true)
+		appendCandidates(model.FindUsersByIPSubnetWithContext(ctx, subnet), true)
 	}
 }
 
-func collectCandidatesByIPHistory(userID int, candidateSet map[int]struct{}, candidateUserID int) {
+func collectCandidatesByIPHistory(ctx context.Context, userID int, candidateSet map[int]struct{}, candidateUserID int) {
 	if userID <= 0 {
 		return
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
 	budget := getFingerprintCandidateBudget()
-	for _, ip := range model.GetUserIPs(userID) {
+	for _, ip := range model.GetUserIPsWithContext(ctx, userID) {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
 		if strings.TrimSpace(ip) == "" {
 			continue
 		}
-		if appendCandidatesWithBudget(candidateSet, model.FindUsersByIP(ip), budget.MaxLowSignalPerSource, userID, candidateUserID, budget.MaxTotal) {
+		if appendCandidatesWithBudget(candidateSet, model.FindUsersByIPWithContext(ctx, ip), budget.MaxLowSignalPerSource, userID, candidateUserID, budget.MaxTotal) {
 			return
 		}
 	}
@@ -276,7 +281,7 @@ func candidateSetToSlice(candidateSet map[int]struct{}) []int {
 // 仍能通过IP匹配发现候选用户进入打分流程。
 func findCandidates(userID int, fp *model.Fingerprint) []int {
 	candidateSet := make(map[int]struct{})
-	collectCandidatesByFingerprint(userID, fp, candidateSet, 0)
+	collectCandidatesByFingerprint(context.Background(), userID, fp, candidateSet, 0)
 	return candidateSetToSlice(candidateSet)
 }
 
@@ -299,7 +304,7 @@ func computeBestLinkScore(userA int, fpA *model.Fingerprint, userB int, fpsB []*
 	return best
 }
 
-func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (float64, []DimensionMatch, int, int) {
+func calculateFallbackSimilarity(ctx context.Context, a, b *model.Fingerprint, userA, userB int) (float64, []DimensionMatch, int, int) {
 	weights := getFeatureWeights()
 	type dimDef struct {
 		Name        string
@@ -443,15 +448,15 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 	weightedScore += uaSim * uaWeight
 
 	// IP历史重叠度
-	ipOverlap := ComputeIPOverlap(userA, userB)
+	ipOverlap := ComputeIPOverlapWithContext(ctx, userA, userB)
 	ipHistWeight := weights.IPHistoryOverlap
 	totalDims++
 	ipMatched := ipOverlap > 0.2
 	if ipMatched {
 		matchDims++
 	}
-	ipsA := model.GetUserIPs(userA)
-	ipsB := model.GetUserIPs(userB)
+	ipsA := model.GetUserIPsWithContext(ctx, userA)
+	ipsB := model.GetUserIPsWithContext(ctx, userB)
 	details = append(details, DimensionMatch{
 		Dimension:   "ip_history_overlap",
 		DisplayName: "历史IP重叠度",
@@ -466,8 +471,8 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 	weightedScore += ipOverlap * ipHistWeight
 
 	// ASN 相似度（用户级）
-	if common.FingerprintEnableASNAnalysis && hasASNEvidence(userA, userB) {
-		asnSim := ComputeASNOverlap(userA, userB)
+	if common.FingerprintEnableASNAnalysis && hasASNEvidenceWithContext(ctx, userA, userB) {
+		asnSim := ComputeASNOverlapWithContext(ctx, userA, userB)
 		asnWeight := weights.ASNSimilarity
 		totalDims++
 		asnMatched := asnSim > 0.2
@@ -490,7 +495,7 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 
 	// 时间模式相似度 / 互斥切换分析（用户级）
 	if common.FingerprintEnableTemporalAnalysis {
-		timeSim := ComputeTimeSimilarity(userA, userB)
+		timeSim := ComputeTimeSimilarityWithContext(ctx, userA, userB)
 		if timeSim > 0 {
 			timeWeight := weights.TimeSimilarity
 			totalDims++
@@ -512,7 +517,7 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 			weightedScore += timeSim * timeWeight
 		}
 
-		switches := CheckMutualExclusionByUsers(userA, userB, 5)
+		switches := CheckMutualExclusionByUsersWithContext(ctx, userA, userB, 5)
 		if switches > 0 {
 			mutualScore := normalizeMutualExclusion(switches)
 			mutualWeight := weights.MutualExclusion
@@ -537,8 +542,8 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 	}
 
 	if common.FingerprintEnableBehaviorAnalysis {
-		if keystrokeA := model.GetLatestKeystrokeProfile(userA); keystrokeA != nil && keystrokeA.SampleCount >= getKeystrokeMinSamples() {
-			if keystrokeB := model.GetLatestKeystrokeProfile(userB); keystrokeB != nil && keystrokeB.SampleCount >= getKeystrokeMinSamples() {
+		if keystrokeA := model.GetLatestKeystrokeProfileWithContext(ctx, userA); keystrokeA != nil && keystrokeA.SampleCount >= getKeystrokeMinSamples() {
+			if keystrokeB := model.GetLatestKeystrokeProfileWithContext(ctx, userB); keystrokeB != nil && keystrokeB.SampleCount >= getKeystrokeMinSamples() {
 				keystrokeSim := CompareKeystrokeProfiles(*keystrokeA, *keystrokeB)
 				keystrokeWeight := weights.KeystrokeSimilarity
 				totalDims++
@@ -561,8 +566,8 @@ func calculateFallbackSimilarity(a, b *model.Fingerprint, userA, userB int) (flo
 			}
 		}
 
-		if mouseA := model.GetLatestMouseProfile(userA); mouseA != nil && mouseA.SampleCount >= getMouseMinSamples() {
-			if mouseB := model.GetLatestMouseProfile(userB); mouseB != nil && mouseB.SampleCount >= getMouseMinSamples() {
+		if mouseA := model.GetLatestMouseProfileWithContext(ctx, userA); mouseA != nil && mouseA.SampleCount >= getMouseMinSamples() {
+			if mouseB := model.GetLatestMouseProfileWithContext(ctx, userB); mouseB != nil && mouseB.SampleCount >= getMouseMinSamples() {
 				mouseSim := CompareMouseProfiles(*mouseA, *mouseB)
 				mouseWeight := weights.MouseSimilarity
 				totalDims++
@@ -625,6 +630,10 @@ func getTierFromScore(score float64) string {
 }
 
 func CalculateSimilarity(a, b *model.Fingerprint, userA, userB int) SimilarityResult {
+	return CalculateSimilarityWithContext(context.Background(), a, b, userA, userB)
+}
+
+func CalculateSimilarityWithContext(ctx context.Context, a, b *model.Fingerprint, userA, userB int) SimilarityResult {
 	weights := getFeatureWeights()
 	if confidence, details, matched := evaluateStrongSignals(a, b, weights); matched {
 		return SimilarityResult{
@@ -638,7 +647,7 @@ func CalculateSimilarity(a, b *model.Fingerprint, userA, userB int) SimilarityRe
 		}
 	}
 
-	fallbackScore, fallbackDetails, fallbackMatchDims, fallbackTotalDims := calculateFallbackSimilarity(a, b, userA, userB)
+	fallbackScore, fallbackDetails, fallbackMatchDims, fallbackTotalDims := calculateFallbackSimilarity(ctx, a, b, userA, userB)
 
 	deviceScore := 0.0
 	networkScore := 0.0
@@ -794,8 +803,12 @@ func computeUASimilarity(a, b *model.Fingerprint) float64 {
 
 // ComputeIPOverlap 计算两个用户的IP历史重叠度 (Jaccard 系数)
 func ComputeIPOverlap(userA, userB int) float64 {
-	ipsA := model.GetUserIPs(userA)
-	ipsB := model.GetUserIPs(userB)
+	return ComputeIPOverlapWithContext(context.Background(), userA, userB)
+}
+
+func ComputeIPOverlapWithContext(ctx context.Context, userA, userB int) float64 {
+	ipsA := model.GetUserIPsWithContext(ctx, userA)
+	ipsB := model.GetUserIPsWithContext(ctx, userB)
 
 	if len(ipsA) == 0 || len(ipsB) == 0 {
 		return 0
@@ -823,8 +836,12 @@ func ComputeIPOverlap(userA, userB int) float64 {
 
 // GetSharedIPs 获取两个用户的共享IP
 func GetSharedIPs(userA, userB int) []string {
-	ipsA := model.GetUserIPs(userA)
-	ipsB := model.GetUserIPs(userB)
+	return GetSharedIPsWithContext(context.Background(), userA, userB)
+}
+
+func GetSharedIPsWithContext(ctx context.Context, userA, userB int) []string {
+	ipsA := model.GetUserIPsWithContext(ctx, userA)
+	ipsB := model.GetUserIPsWithContext(ctx, userB)
 
 	setA := make(map[string]bool)
 	for _, ip := range ipsA {
@@ -1130,8 +1147,12 @@ func banUserByID(userID int) error {
 }
 
 func hasASNEvidence(userA, userB int) bool {
-	historyA := model.GetIPUAHistory(userA)
-	historyB := model.GetIPUAHistory(userB)
+	return hasASNEvidenceWithContext(context.Background(), userA, userB)
+}
+
+func hasASNEvidenceWithContext(ctx context.Context, userA, userB int) bool {
+	historyA := model.GetIPUAHistoryWithContext(ctx, userA)
+	historyB := model.GetIPUAHistoryWithContext(ctx, userB)
 	for _, h := range historyA {
 		if h != nil && h.ASN > 0 && !shouldIgnoreASNHistory(h) {
 			for _, other := range historyB {
@@ -1162,8 +1183,12 @@ func shouldIgnoreASNHistory(h *model.IPUAHistory) bool {
 }
 
 func ComputeASNOverlap(userA, userB int) float64 {
-	historyA := model.GetIPUAHistory(userA)
-	historyB := model.GetIPUAHistory(userB)
+	return ComputeASNOverlapWithContext(context.Background(), userA, userB)
+}
+
+func ComputeASNOverlapWithContext(ctx context.Context, userA, userB int) float64 {
+	historyA := model.GetIPUAHistoryWithContext(ctx, userA)
+	historyB := model.GetIPUAHistoryWithContext(ctx, userB)
 	if len(historyA) == 0 || len(historyB) == 0 {
 		return 0
 	}

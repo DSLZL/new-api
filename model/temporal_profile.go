@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,11 +40,19 @@ func UpsertTemporalProfile(profile *UserTemporalProfile) error {
 }
 
 func GetLatestTemporalProfile(userID int) *UserTemporalProfile {
+	return GetLatestTemporalProfileWithContext(context.Background(), userID)
+}
+
+func GetLatestTemporalProfileWithContext(ctx context.Context, userID int) *UserTemporalProfile {
 	if userID <= 0 {
 		return nil
 	}
 	var profile UserTemporalProfile
-	if err := DB.Where("user_id = ?", userID).
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	if err := db.Where("user_id = ?", userID).
 		Order("profile_date DESC").
 		Order("last_activity_at DESC").
 		First(&profile).Error; err != nil {
@@ -83,11 +92,19 @@ func ReplaceUserSessions(userID int, sessions []UserSession) error {
 }
 
 func GetLatestUserSessions(userID int, limit int) []UserSession {
+	return GetLatestUserSessionsWithContext(context.Background(), userID, limit)
+}
+
+func GetLatestUserSessionsWithContext(ctx context.Context, userID int, limit int) []UserSession {
 	if userID <= 0 {
 		return nil
 	}
 	var sessions []UserSession
-	query := DB.Where("user_id = ?", userID).Order("started_at DESC")
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	query := db.Where("user_id = ?", userID).Order("started_at DESC")
 	if limit > 0 {
 		query = query.Limit(limit)
 	}

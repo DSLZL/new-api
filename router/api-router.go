@@ -428,6 +428,7 @@ func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
 		fpAdmin.POST("/compare", controller.FPCompareUsers)
 
 		// 仅超级管理员
+		fpAdmin.POST("/account-links/repair", middleware.SuperAdminOnly(), controller.FPRepairAccountLinks)
 		fpAdmin.POST("/scan", middleware.SuperAdminOnly(), controller.FPTriggerFullScan)
 
 		fpAdmin.POST("/user/:id/reset-test-data", middleware.SuperAdminOnly(), controller.FPResetUserFingerprintTestData)

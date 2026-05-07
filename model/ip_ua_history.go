@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -280,10 +281,28 @@ func UpsertIPUAHistory(record *IPUAHistory) error {
 	return trimIPUAHistoryByUser(record.UserID)
 }
 
+func ipUAHistoryQueryDB(ctx context.Context) *gorm.DB {
+	if DB == nil {
+		return nil
+	}
+	if ctx == nil {
+		return DB
+	}
+	return DB.WithContext(ctx)
+}
+
 // FindUsersByIP 根据IP查找用户
 func FindUsersByIP(ip string) []int {
+	return FindUsersByIPWithContext(context.Background(), ip)
+}
+
+func FindUsersByIPWithContext(ctx context.Context, ip string) []int {
 	var userIDs []int
-	DB.Model(&IPUAHistory{}).
+	db := ipUAHistoryQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
+	db.Model(&IPUAHistory{}).
 		Where("ip_address = ?", ip).
 		Distinct("user_id").
 		Pluck("user_id", &userIDs)
@@ -292,8 +311,16 @@ func FindUsersByIP(ip string) []int {
 
 // FindUsersByIPSubnet 根据IP子网查找用户 (前缀匹配)
 func FindUsersByIPSubnet(subnet string) []int {
+	return FindUsersByIPSubnetWithContext(context.Background(), subnet)
+}
+
+func FindUsersByIPSubnetWithContext(ctx context.Context, subnet string) []int {
 	var userIDs []int
-	DB.Model(&IPUAHistory{}).
+	db := ipUAHistoryQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
+	db.Model(&IPUAHistory{}).
 		Where("ip_address LIKE ?", subnet+"%").
 		Distinct("user_id").
 		Pluck("user_id", &userIDs)
@@ -302,8 +329,16 @@ func FindUsersByIPSubnet(subnet string) []int {
 
 // GetUserIPs 获取用户的所有历史IP
 func GetUserIPs(userID int) []string {
+	return GetUserIPsWithContext(context.Background(), userID)
+}
+
+func GetUserIPsWithContext(ctx context.Context, userID int) []string {
 	var ips []string
-	DB.Model(&IPUAHistory{}).
+	db := ipUAHistoryQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
+	db.Model(&IPUAHistory{}).
 		Where("user_id = ?", userID).
 		Distinct("ip_address").
 		Pluck("ip_address", &ips)
@@ -312,8 +347,16 @@ func GetUserIPs(userID int) []string {
 
 // GetIPUAHistory 获取用户的IP/UA历史
 func GetIPUAHistory(userID int) []*IPUAHistory {
+	return GetIPUAHistoryWithContext(context.Background(), userID)
+}
+
+func GetIPUAHistoryWithContext(ctx context.Context, userID int) []*IPUAHistory {
 	var history []*IPUAHistory
-	DB.Where("user_id = ?", userID).
+	db := ipUAHistoryQueryDB(ctx)
+	if db == nil {
+		return nil
+	}
+	db.Where("user_id = ?", userID).
 		Order("last_seen DESC").
 		Find(&history)
 	return history

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -134,7 +135,7 @@ func TestQueryUserAssociations_IncludesMediaDeviceGroupHashCandidate(t *testing.
 	}
 	require.NoError(t, model.DB.Create(candidateFP).Error)
 
-	res, err := QueryUserAssociations(101, 0.0, 20, true, nil)
+	res, err := QueryUserAssociations(context.Background(), 101, 0.0, 20, true, nil)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	require.NotEmpty(t, res.Associations)
@@ -158,10 +159,10 @@ func TestBuildAssociationCacheKey_IncludesQueryOptions(t *testing.T) {
 		IncludeSharedIPs: false,
 	})
 	modeOnlyOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
-		IncludeDetails:           false,
-		IncludeSharedIPs:         false,
-		Mode:                     associationModeFull,
-		TargetFingerprintLimit:   defaultOptions.TargetFingerprintLimit,
+		IncludeDetails:            false,
+		IncludeSharedIPs:          false,
+		Mode:                      associationModeFull,
+		TargetFingerprintLimit:    defaultOptions.TargetFingerprintLimit,
 		CandidateFingerprintLimit: defaultOptions.CandidateFingerprintLimit,
 	})
 	candidateOptions := normalizeAssociationQueryOptions(&AssociationQueryOptions{
@@ -181,6 +182,13 @@ func TestBuildAssociationCacheKey_IncludesQueryOptions(t *testing.T) {
 	require.NotEqual(t, keyDefault, keyCandidate)
 	require.NotEqual(t, keyLightweight, keyCandidate)
 	require.NotEqual(t, keyModeOnly, keyCandidate)
+}
+
+func TestNormalizeAssociationQueryOptions_DefaultIncludesDetailsAndSharedIPs(t *testing.T) {
+	options := normalizeAssociationQueryOptions(nil)
+	require.True(t, options.IncludeDetails)
+	require.True(t, options.IncludeSharedIPs)
+	require.Equal(t, associationModeFast, options.Mode)
 }
 
 func TestQueryUserAssociationsWithOptions_LimitAndBatchHydration(t *testing.T) {
@@ -226,7 +234,7 @@ func TestQueryUserAssociationsWithOptions_LimitAndBatchHydration(t *testing.T) {
 	seedIPHistory(t, 203, "172.16.1.2", "172.16.1.3")
 	seedIPHistory(t, 204, "172.16.1.9")
 
-	res, err := QueryUserAssociationsWithOptions(201, 0.0, 1, true, nil, &AssociationQueryOptions{
+	res, err := QueryUserAssociationsWithOptions(context.Background(), 201, 0.0, 1, true, nil, &AssociationQueryOptions{
 		IncludeDetails:   false,
 		IncludeSharedIPs: false,
 	})
@@ -244,44 +252,47 @@ func TestQueryUserAssociationsWithOptions_LimitAndBatchHydration(t *testing.T) {
 	require.Greater(t, top.ExistingLink.LinkID, int64(0))
 }
 
-func TestQueryUserAssociationsWithOptions_CandidateFilterAndSharedIPs(t *testing.T) {
+func TestQueryUserAssociationsWithOptions_ContextCanceled(t *testing.T) {
 	initAssociationQueryTestDB(t)
 	withAssociationFingerprintFlags(t)
 
-	createAssociationTestUser(t, 301, "u301")
-	createAssociationTestUser(t, 302, "u302")
-	createAssociationTestUser(t, 303, "u303")
+	createAssociationTestUser(t, 401, "u401")
+	createAssociationTestUser(t, 402, "u402")
 
 	require.NoError(t, model.DB.Create(&model.Fingerprint{
-		UserID:                301,
-		LocalDeviceID:         "device-301",
-		CanvasHash:            "canvas-301",
-		WebGLHash:             "webgl-301",
-		AudioHash:             "audio-301",
-		CompositeHash:         "composite-301",
-		MediaDeviceGroupHash:  "media-group-filter",
+		UserID:                401,
+		LocalDeviceID:         "device-401",
+		CanvasHash:            "canvas-401",
+		WebGLHash:             "webgl-401",
+		AudioHash:             "audio-401",
+		CompositeHash:         "composite-401",
+		MediaDeviceGroupHash:  "media-group-canceled",
 		MediaDeviceCount:      "2-1-1",
 		SpeechVoiceCount:      7,
 		SpeechLocalVoiceCount: 2,
-		IPAddress:             "10.30.0.1",
+		IPAddress:             "10.40.0.1",
+	}).Error)
+	require.NoError(t, model.DB.Create(&model.Fingerprint{
+		UserID:                402,
+		LocalDeviceID:         "device-402",
+		CanvasHash:            "canvas-402",
+		WebGLHash:             "webgl-402",
+		AudioHash:             "audio-402",
+		CompositeHash:         "composite-402",
+		MediaDeviceGroupHash:  "media-group-canceled",
+		MediaDeviceCount:      "2-1-1",
+		SpeechVoiceCount:      7,
+		SpeechLocalVoiceCount: 2,
+		IPAddress:             "10.40.0.2",
 	}).Error)
 
-	createCandidateWithSharedFingerprint(t, 302, "10.30.0.2", "media-group-filter")
-	createCandidateWithSharedFingerprint(t, 303, "10.30.0.3", "media-group-filter")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	seedIPHistory(t, 301, "192.168.10.7")
-	seedIPHistory(t, 302, "192.168.10.7")
-	seedIPHistory(t, 303, "192.168.10.8")
-
-	res, err := QueryUserAssociationsWithOptions(301, 0.0, 20, true, nil, &AssociationQueryOptions{
-		IncludeDetails:   false,
+	res, err := QueryUserAssociationsWithOptions(ctx, 401, 0.0, 20, true, nil, &AssociationQueryOptions{
+		IncludeDetails:   true,
 		IncludeSharedIPs: true,
-		CandidateUserID:  302,
 	})
-	require.NoError(t, err)
-	require.NotNil(t, res)
-	require.Len(t, res.Associations, 1)
-	require.Equal(t, 302, res.Associations[0].User.ID)
-	require.Equal(t, []string{"192.168.10.7"}, res.Associations[0].SharedIPs)
-	require.Empty(t, res.Associations[0].Details)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, res)
 }

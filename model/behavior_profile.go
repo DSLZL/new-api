@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -152,6 +153,10 @@ func upsertKeystrokeProfileWithDB(db *gorm.DB, profile *KeystrokeProfile) error 
 }
 
 func GetLatestKeystrokeProfile(userID int) *KeystrokeProfile {
+	return GetLatestKeystrokeProfileWithContext(context.Background(), userID)
+}
+
+func GetLatestKeystrokeProfileWithContext(ctx context.Context, userID int) *KeystrokeProfile {
 	if userID <= 0 {
 		return nil
 	}
@@ -159,7 +164,11 @@ func GetLatestKeystrokeProfile(userID int) *KeystrokeProfile {
 		return nil
 	}
 	var profile KeystrokeProfile
-	result := DB.Where("user_id = ?", userID).
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	result := db.Where("user_id = ?", userID).
 		Order("updated_at DESC").
 		Limit(1).
 		Find(&profile)
@@ -260,6 +269,10 @@ func upsertBehaviorProfilesAtomicWithDB(db *gorm.DB, keystroke *KeystrokeProfile
 }
 
 func GetLatestMouseProfile(userID int) *MouseProfile {
+	return GetLatestMouseProfileWithContext(context.Background(), userID)
+}
+
+func GetLatestMouseProfileWithContext(ctx context.Context, userID int) *MouseProfile {
 	if userID <= 0 {
 		return nil
 	}
@@ -267,7 +280,11 @@ func GetLatestMouseProfile(userID int) *MouseProfile {
 		return nil
 	}
 	var profile MouseProfile
-	result := DB.Where("user_id = ?", userID).
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	result := db.Where("user_id = ?", userID).
 		Order("updated_at DESC").
 		Limit(1).
 		Find(&profile)

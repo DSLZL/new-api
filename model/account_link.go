@@ -1,11 +1,15 @@
 package model
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -16,15 +20,24 @@ const (
 	AccountLinkStatusRejected      = "rejected"
 	AccountLinkStatusAutoConfirmed = "auto_confirmed"
 	AccountLinkStatusWhitelisted   = "whitelisted"
+
+	accountLinkUniqueIndexName                = "uk_link_pair"
+	accountLinkUniqueIndexNormalizedOptionKey = "migration.account_links.uk_link_pair.normalized_v1"
+	accountLinkUniqueIndexNormalizedOptionVal = "done"
+	accountLinkNormalizeBatchSize             = 256
 )
 
-var allowedAccountLinkStatuses = map[string]struct{}{
-	AccountLinkStatusPending:       {},
-	AccountLinkStatusConfirmed:     {},
-	AccountLinkStatusRejected:      {},
-	AccountLinkStatusAutoConfirmed: {},
-	AccountLinkStatusWhitelisted:   {},
-}
+var (
+	allowedAccountLinkStatuses = map[string]struct{}{
+		AccountLinkStatusPending:       {},
+		AccountLinkStatusConfirmed:     {},
+		AccountLinkStatusRejected:      {},
+		AccountLinkStatusAutoConfirmed: {},
+		AccountLinkStatusWhitelisted:   {},
+	}
+	ErrAccountLinkUniqueIndexNotReady = errors.New("account_links unique index is not ready")
+	accountLinkWritesReady            atomic.Bool
+)
 
 // AccountLink 账号关联结果
 type AccountLink struct {
@@ -68,25 +81,40 @@ func GetLinkByUsers(userA, userB int) *AccountLink {
 }
 
 func GetLinksByUserAndCandidates(userID int, candidateUserIDs []int) map[int]*AccountLink {
+	linksByPeer, _ := GetLinksByUserAndCandidatesWithContextE(context.Background(), userID, candidateUserIDs)
+	return linksByPeer
+}
+
+func GetLinksByUserAndCandidatesWithContext(ctx context.Context, userID int, candidateUserIDs []int) map[int]*AccountLink {
+	linksByPeer, _ := GetLinksByUserAndCandidatesWithContextE(ctx, userID, candidateUserIDs)
+	return linksByPeer
+}
+
+func GetLinksByUserAndCandidatesWithContextE(ctx context.Context, userID int, candidateUserIDs []int) (map[int]*AccountLink, error) {
 	linksByPeer := make(map[int]*AccountLink)
 	if userID <= 0 || len(candidateUserIDs) == 0 || DB == nil {
-		return linksByPeer
+		return linksByPeer, nil
 	}
 
 	filteredCandidateIDs := uniquePositiveUserIDs(candidateUserIDs, userID)
 	if len(filteredCandidateIDs) == 0 {
-		return linksByPeer
+		return linksByPeer, nil
+	}
+
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
 	}
 
 	var links []AccountLink
-	if err := DB.Where(
+	if err := db.Where(
 		"(user_id_a = ? AND user_id_b IN ?) OR (user_id_b = ? AND user_id_a IN ?)",
 		userID,
 		filteredCandidateIDs,
 		userID,
 		filteredCandidateIDs,
 	).Order("id ASC").Find(&links).Error; err != nil {
-		return linksByPeer
+		return linksByPeer, err
 	}
 
 	for i := range links {
@@ -110,7 +138,7 @@ func GetLinksByUserAndCandidates(userID int, candidateUserIDs []int) map[int]*Ac
 		linksByPeer[peerID] = &copyLink
 	}
 
-	return linksByPeer
+	return linksByPeer, nil
 }
 
 func uniquePositiveUserIDs(userIDs []int, excludedUserID int) []int {
@@ -145,7 +173,30 @@ func FindExistingLink(userA, userB int) *AccountLink {
 	return &link
 }
 
+func hasAccountLinkUniqueIndex(db *gorm.DB) bool {
+	return db != nil && db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName)
+}
+
+func setAccountLinkWritesReady(ready bool) {
+	accountLinkWritesReady.Store(ready)
+}
+
+func ensureAccountLinkWriteReady(db *gorm.DB) error {
+	if accountLinkWritesReady.Load() {
+		return nil
+	}
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		return nil
+	}
+	setAccountLinkWritesReady(false)
+	return ErrAccountLinkUniqueIndexNotReady
+}
+
 func UpsertLink(userA, userB int, confidence float64, matchDims, totalDims int, detailsJSON string) error {
+	if err := ensureAccountLinkWriteReady(DB); err != nil {
+		return err
+	}
 	a, b := NormalizePair(userA, userB)
 	now := time.Now()
 	link := AccountLink{
@@ -173,6 +224,9 @@ func UpsertLink(userA, userB int, confidence float64, matchDims, totalDims int, 
 // UpsertLinkSnapshot 使用当前快照覆盖分数与详情。
 // 注意：仅覆盖评分相关字段，不修改 status/reviewed_* / review_note / action_taken 语义。
 func UpsertLinkSnapshot(userA, userB int, confidence float64, matchDims, totalDims int, detailsJSON string) error {
+	if err := ensureAccountLinkWriteReady(DB); err != nil {
+		return err
+	}
 	a, b := NormalizePair(userA, userB)
 	now := time.Now()
 	link := AccountLink{
@@ -340,19 +394,114 @@ func UpdateLinkAction(linkID int64, action string) error {
 
 func EnsureAccountLinkUniqueIndex(db *gorm.DB) error {
 	if db == nil {
+		setAccountLinkWritesReady(false)
 		return nil
 	}
-	const indexName = "uk_link_pair"
-	if err := normalizeAccountLinksForUniqueIndex(db); err != nil {
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		common.SysLog("account_links unique index check: index exists, skip startup repair")
+		return nil
+	}
+	if accountLinksNeedUniqueIndexNormalization(db) {
+		setAccountLinkWritesReady(false)
+		common.SysLog("account_links unique index check: legacy anomalies detected, startup skipped heavy repair; run admin fingerprint account-links repair manually")
+		return nil
+	}
+	common.SysLog("account_links unique index check: no legacy anomalies detected, creating missing unique index")
+	if err := createAccountLinkUniqueIndex(db); err != nil {
+		setAccountLinkWritesReady(false)
 		return err
 	}
-	if db.Migrator().HasIndex(&AccountLink{}, indexName) {
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		common.SysLog("account_links unique index check: unique index created without legacy repair")
+		return markAccountLinkUniqueIndexNormalizationCompleted(db)
+	}
+	setAccountLinkWritesReady(false)
+	return nil
+}
+
+func RepairAccountLinkUniqueIndex(db *gorm.DB) error {
+	if db == nil {
+		setAccountLinkWritesReady(false)
 		return nil
 	}
-	return db.Exec("CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)").Error
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		common.SysLog("account_links unique index repair: index already exists, mark normalization completed")
+		return markAccountLinkUniqueIndexNormalizationCompleted(db)
+	}
+	if accountLinksNeedUniqueIndexNormalization(db) {
+		common.SysLog("account_links unique index repair: legacy anomalies detected, starting normalization")
+	} else {
+		common.SysLog("account_links unique index repair: no legacy anomalies detected, ensuring unique index only")
+	}
+	if err := normalizeAccountLinksForUniqueIndex(db); err != nil {
+		setAccountLinkWritesReady(false)
+		return err
+	}
+	common.SysLog("account_links unique index repair: normalization stage completed")
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		return markAccountLinkUniqueIndexNormalizationCompleted(db)
+	}
+	if err := createAccountLinkUniqueIndex(db); err != nil {
+		setAccountLinkWritesReady(false)
+		return err
+	}
+	if hasAccountLinkUniqueIndex(db) {
+		setAccountLinkWritesReady(true)
+		return markAccountLinkUniqueIndexNormalizationCompleted(db)
+	}
+	setAccountLinkWritesReady(false)
+	return fmt.Errorf("account_links unique index was not created")
+}
+
+func createAccountLinkUniqueIndex(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	var err error
+	if common.UsingPostgreSQL {
+		err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS uk_link_pair ON account_links(user_id_a, user_id_b)").Error
+	} else {
+		err = execCreateIndexIfMissing(db, "CREATE UNIQUE INDEX uk_link_pair ON account_links(user_id_a, user_id_b)").Error
+	}
+	if err != nil && db.Migrator().HasIndex(&AccountLink{}, accountLinkUniqueIndexName) {
+		return nil
+	}
+	return err
+}
+
+func markAccountLinkUniqueIndexNormalizationCompleted(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(&Option{}) {
+		return nil
+	}
+	option := Option{
+		Key:   accountLinkUniqueIndexNormalizedOptionKey,
+		Value: accountLinkUniqueIndexNormalizedOptionVal,
+	}
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.Assignments(map[string]any{"value": option.Value}),
+	}).Create(&option).Error
+}
+
+type accountLinkGroup struct {
+	merged AccountLink
+	ids    []int64
 }
 
 func normalizeAccountLinksForUniqueIndex(db *gorm.DB) error {
+	startAt := time.Now()
+	if !accountLinksNeedUniqueIndexNormalization(db) {
+		common.SysLog("account_links unique index repair: normalization skipped, no legacy anomalies")
+		return nil
+	}
+
 	tx := db.Begin()
 	if tx.Error != nil {
 		return tx.Error
@@ -364,32 +513,13 @@ func normalizeAccountLinksForUniqueIndex(db *gorm.DB) error {
 		}
 	}()
 
-	var links []AccountLink
-	if err := tx.Order("id ASC").Find(&links).Error; err != nil {
+	groups, scannedRows, err := collectAccountLinkNormalizationGroups(tx, accountLinkNormalizeBatchSize)
+	if err != nil {
 		tx.Rollback()
 		return err
 	}
 
-	type accountLinkGroup struct {
-		merged AccountLink
-		ids    []int64
-	}
-	groups := make(map[string]accountLinkGroup, len(links))
-	for _, link := range links {
-		normalized := link
-		normalized.UserIDA, normalized.UserIDB = NormalizePair(link.UserIDA, link.UserIDB)
-		normalized.Status = canonicalAccountLinkStatus(link.Status)
-		key := fmt.Sprintf("%d:%d", normalized.UserIDA, normalized.UserIDB)
-		group, ok := groups[key]
-		if !ok {
-			groups[key] = accountLinkGroup{merged: normalized, ids: []int64{normalized.ID}}
-			continue
-		}
-		group.merged = mergeAccountLinkRows(group.merged, normalized)
-		group.ids = append(group.ids, normalized.ID)
-		groups[key] = group
-	}
-
+	deletedRows := 0
 	for _, group := range groups {
 		deleteIDs := make([]int64, 0, len(group.ids)-1)
 		for _, id := range group.ids {
@@ -398,6 +528,7 @@ func normalizeAccountLinksForUniqueIndex(db *gorm.DB) error {
 			}
 		}
 		if len(deleteIDs) > 0 {
+			deletedRows += len(deleteIDs)
 			if err := tx.Where("id IN ?", deleteIDs).Delete(&AccountLink{}).Error; err != nil {
 				tx.Rollback()
 				return err
@@ -423,7 +554,100 @@ func normalizeAccountLinksForUniqueIndex(db *gorm.DB) error {
 		}
 	}
 
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	common.SysLog(fmt.Sprintf(
+		"account_links unique index repair: normalization completed (scanned_rows=%d, merged_groups=%d, deleted_rows=%d, duration_ms=%d)",
+		scannedRows,
+		len(groups),
+		deletedRows,
+		time.Since(startAt).Milliseconds(),
+	))
+	return nil
+}
+
+func accountLinksNeedUniqueIndexNormalization(db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+
+	var reversePairCount int64
+	if err := db.Model(&AccountLink{}).Where("user_id_a >= user_id_b").Count(&reversePairCount).Error; err == nil && reversePairCount > 0 {
+		return true
+	}
+
+	type duplicatePairRow struct {
+		UserIDA int
+		UserIDB int
+	}
+	var duplicatePair duplicatePairRow
+	result := db.Model(&AccountLink{}).
+		Select("user_id_a, user_id_b").
+		Group("user_id_a, user_id_b").
+		Having("COUNT(*) > 1").
+		Limit(1).
+		Find(&duplicatePair)
+	if result.Error == nil && result.RowsAffected > 0 {
+		return true
+	}
+
+	if reversedDuplicatePairExists(db) {
+		return true
+	}
+
+	return false
+}
+
+func reversedDuplicatePairExists(db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+
+	base := db.Table("account_links AS al1").
+		Joins("JOIN account_links AS al2 ON al1.user_id_a = al2.user_id_b AND al1.user_id_b = al2.user_id_a AND al1.id < al2.id")
+
+	var sample struct{ ID int64 }
+	return base.Select("al1.id").Limit(1).Scan(&sample).Error == nil && sample.ID > 0
+}
+
+func collectAccountLinkNormalizationGroups(tx *gorm.DB, batchSize int) (map[string]accountLinkGroup, int, error) {
+	groups := make(map[string]accountLinkGroup)
+	scannedRows := 0
+	lastID := int64(0)
+	for {
+		var links []AccountLink
+		query := tx.Select("id", "user_id_a", "user_id_b", "confidence", "match_dimensions", "total_dimensions", "match_details", "status", "action_taken", "reviewed_by", "reviewed_at", "review_note", "created_at", "updated_at").
+			Where("id > ?", lastID).
+			Order("id ASC").
+			Limit(batchSize)
+		if err := query.Find(&links).Error; err != nil {
+			return nil, 0, err
+		}
+		if len(links) == 0 {
+			break
+		}
+		scannedRows += len(links)
+		for _, link := range links {
+			normalized := link
+			normalized.UserIDA, normalized.UserIDB = NormalizePair(link.UserIDA, link.UserIDB)
+			normalized.Status = canonicalAccountLinkStatus(link.Status)
+			key := fmt.Sprintf("%d:%d", normalized.UserIDA, normalized.UserIDB)
+			group, ok := groups[key]
+			if !ok {
+				groups[key] = accountLinkGroup{merged: normalized, ids: []int64{normalized.ID}}
+				continue
+			}
+			group.merged = mergeAccountLinkRows(group.merged, normalized)
+			group.ids = append(group.ids, normalized.ID)
+			groups[key] = group
+		}
+		lastID = links[len(links)-1].ID
+		if len(links) < batchSize {
+			break
+		}
+	}
+	return groups, scannedRows, nil
 }
 
 func canonicalAccountLinkStatus(status string) string {

@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -37,6 +39,46 @@ func initAdminFingerprintTestDB(t *testing.T) {
 		model.DB = oldDB
 		_ = sqlDB.Close()
 	})
+}
+
+func TestFPRepairAccountLinks_RepairsLegacyRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	initAdminFingerprintTestDB(t)
+
+	require.NoError(t, model.DB.AutoMigrate(&model.AccountLink{}))
+	require.NoError(t, model.DB.Create(&model.AccountLink{UserIDA: 9, UserIDB: 4, Confidence: 0.4, Status: model.AccountLinkStatusPending, MatchDetails: `[]`}).Error)
+	require.NoError(t, model.DB.Create(&model.AccountLink{UserIDA: 4, UserIDB: 9, Confidence: 0.8, Status: model.AccountLinkStatusConfirmed, MatchDetails: `[]`}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/fingerprint/account-links/repair", nil)
+
+	FPRepairAccountLinks(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	require.True(t, model.DB.Migrator().HasIndex(&model.AccountLink{}, "uk_link_pair"))
+
+	var links []model.AccountLink
+	require.NoError(t, model.DB.Order("id ASC").Find(&links).Error)
+	require.Len(t, links, 1)
+	require.Equal(t, 4, links[0].UserIDA)
+	require.Equal(t, 9, links[0].UserIDB)
+}
+
+func TestFPRepairAccountLinks_RejectsConcurrentRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	fingerprintAccountLinksRepairRunning.Store(true)
+	defer fingerprintAccountLinksRepairRunning.Store(false)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/fingerprint/account-links/repair", nil)
+
+	FPRepairAccountLinks(ctx)
+
+	require.Equal(t, http.StatusConflict, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "already running")
 }
 
 func TestFPGetWeights_ReturnsCurrentWeights(t *testing.T) {
@@ -243,6 +285,147 @@ func TestFPGetUserAssociations_RejectsForeignDeviceProfile(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Contains(t, recorder.Body.String(), `"success":false`)
 	require.Contains(t, recorder.Body.String(), "设备档案")
+}
+
+func TestFPGetUserAssociations_InternalFailureReturnsGenericError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldEnabled := common.FingerprintEnabled
+	common.FingerprintEnabled = false
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+	})
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "88"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/fingerprint/user/88/associations", nil)
+
+	FPGetUserAssociations(ctx)
+
+	require.Equal(t, http.StatusInternalServerError, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":false`)
+	require.Contains(t, recorder.Body.String(), `"error_code":"ASSOCIATION_QUERY_FAILED"`)
+	require.Contains(t, recorder.Body.String(), "association query failed")
+}
+
+func TestFPGetUserAssociations_DefaultsIncludeDetailsAndSharedIPs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	initAdminFingerprintTestDB(t)
+	oldEnabled := common.FingerprintEnabled
+	oldRedis := common.RedisEnabled
+	common.FingerprintEnabled = true
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		common.RedisEnabled = oldRedis
+	})
+
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.AccountLink{}, &model.IPUAHistory{}, &model.LinkWhitelist{}))
+	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.DB.Create(&model.User{Id: 501, Username: "u501", Password: "pwd", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, DisplayName: "u501", Group: "default", AffCode: "u501_aff"}).Error)
+	require.NoError(t, model.DB.Create(&model.User{Id: 502, Username: "u502", Password: "pwd", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, DisplayName: "u502", Group: "default", AffCode: "u502_aff"}).Error)
+	require.NoError(t, model.DB.Create(&model.Fingerprint{UserID: 501, LocalDeviceID: "device-501", CanvasHash: "canvas-501", WebGLHash: "webgl-501", AudioHash: "audio-501", CompositeHash: "composite-501", MediaDeviceGroupHash: "media-group-defaults", MediaDeviceCount: "2-1-1", SpeechVoiceCount: 7, SpeechLocalVoiceCount: 2, IPAddress: "10.50.0.1"}).Error)
+	require.NoError(t, model.DB.Create(&model.Fingerprint{UserID: 502, LocalDeviceID: "device-501", CanvasHash: "canvas-501", WebGLHash: "webgl-501", AudioHash: "audio-501", CompositeHash: "composite-501", MediaDeviceGroupHash: "media-group-defaults", MediaDeviceCount: "2-1-1", SpeechVoiceCount: 7, SpeechLocalVoiceCount: 2, IPAddress: "10.50.0.2"}).Error)
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 501, IPAddress: "172.18.0.8", UABrowser: "chrome", UAOS: "windows", UserAgent: "test-agent"}).Error)
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 502, IPAddress: "172.18.0.8", UABrowser: "chrome", UAOS: "windows", UserAgent: "test-agent"}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "501"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/fingerprint/user/501/associations?refresh=true", nil)
+
+	FPGetUserAssociations(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	require.Contains(t, recorder.Body.String(), `"details":[`)
+	require.Contains(t, recorder.Body.String(), `"shared_ips":["172.18.0.8"]`)
+}
+
+func TestFPGetUserAssociations_RequestCanceledReturns408(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldEnabled := common.FingerprintEnabled
+	oldRedis := common.RedisEnabled
+	common.FingerprintEnabled = true
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		common.RedisEnabled = oldRedis
+	})
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "88"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/fingerprint/user/88/associations", nil).WithContext(requestCtx)
+
+	FPGetUserAssociations(ctx)
+
+	require.Equal(t, http.StatusRequestTimeout, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":false`)
+	require.Contains(t, recorder.Body.String(), "request cancelled")
+}
+
+func TestFPGetUserAssociations_RequestDeadlineExceededReturns504(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldEnabled := common.FingerprintEnabled
+	oldRedis := common.RedisEnabled
+	common.FingerprintEnabled = true
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		common.RedisEnabled = oldRedis
+	})
+
+	requestCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "88"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/fingerprint/user/88/associations", nil).WithContext(requestCtx)
+
+	FPGetUserAssociations(ctx)
+
+	require.Equal(t, http.StatusGatewayTimeout, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":false`)
+	require.Contains(t, recorder.Body.String(), `"error_code":"ASSOCIATION_QUERY_TIMEOUT"`)
+}
+
+func TestFPGetUserAssociations_ExplicitFalseDisablesDetailsAndSharedIPs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	initAdminFingerprintTestDB(t)
+	oldEnabled := common.FingerprintEnabled
+	oldRedis := common.RedisEnabled
+	common.FingerprintEnabled = true
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		common.FingerprintEnabled = oldEnabled
+		common.RedisEnabled = oldRedis
+	})
+
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.AccountLink{}, &model.IPUAHistory{}, &model.LinkWhitelist{}))
+	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.DB.Create(&model.User{Id: 511, Username: "u511", Password: "pwd", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, DisplayName: "u511", Group: "default", AffCode: "u511_aff"}).Error)
+	require.NoError(t, model.DB.Create(&model.User{Id: 512, Username: "u512", Password: "pwd", Status: common.UserStatusEnabled, Role: common.RoleCommonUser, DisplayName: "u512", Group: "default", AffCode: "u512_aff"}).Error)
+	require.NoError(t, model.DB.Create(&model.Fingerprint{UserID: 511, LocalDeviceID: "device-511", CanvasHash: "canvas-511", WebGLHash: "webgl-511", AudioHash: "audio-511", CompositeHash: "composite-511", MediaDeviceGroupHash: "media-group-explicit-false", MediaDeviceCount: "2-1-1", SpeechVoiceCount: 7, SpeechLocalVoiceCount: 2, IPAddress: "10.51.0.1"}).Error)
+	require.NoError(t, model.DB.Create(&model.Fingerprint{UserID: 512, LocalDeviceID: "device-511", CanvasHash: "canvas-511", WebGLHash: "webgl-511", AudioHash: "audio-511", CompositeHash: "composite-511", MediaDeviceGroupHash: "media-group-explicit-false", MediaDeviceCount: "2-1-1", SpeechVoiceCount: 7, SpeechLocalVoiceCount: 2, IPAddress: "10.51.0.2"}).Error)
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 511, IPAddress: "172.19.0.9", UABrowser: "chrome", UAOS: "windows", UserAgent: "test-agent"}).Error)
+	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 512, IPAddress: "172.19.0.9", UABrowser: "chrome", UAOS: "windows", UserAgent: "test-agent"}).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: "511"}}
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/admin/fingerprint/user/511/associations?refresh=true&include_details=false&include_shared_ips=false", nil)
+
+	FPGetUserAssociations(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	require.Contains(t, recorder.Body.String(), `"details":null`)
+	require.Contains(t, recorder.Body.String(), `"shared_ips":null`)
 }
 
 func TestFPUpdateWeights_DoesNotPartiallyApplyWhenPersistenceFailsMidway(t *testing.T) {
