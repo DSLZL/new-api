@@ -26,6 +26,7 @@ function OAuthCallback() {
     code?: string
     state?: string
     redirect?: string
+    aff?: string
   }
   const [mode, setMode] = useState<'login' | 'bind'>(() => {
     if (typeof window === 'undefined') return 'login'
@@ -150,6 +151,18 @@ function OAuthCallback() {
           skipBusinessError: true,
         }
         const res = await api.get(`/api/oauth/${provider}`, config)
+        const businessCode = res?.data?.data?.code as string | undefined
+
+        if (!res?.data?.success && businessCode === 'INVITE_REQUIRED') {
+          const invitePrefill = (search?.aff || '').trim()
+          const inviteSearch =
+            invitePrefill.length > 0
+              ? `?provider=${encodeURIComponent(provider)}&redirect=${encodeURIComponent(search?.redirect || '/dashboard')}&aff=${encodeURIComponent(invitePrefill)}`
+              : `?provider=${encodeURIComponent(provider)}&redirect=${encodeURIComponent(search?.redirect || '/dashboard')}`
+          safeNavigate(`/invite-required${inviteSearch}`)
+          return
+        }
+
         if (res?.data?.success) {
           const { message } = res.data
           const loginUser = (res.data?.data ?? null) as AuthUser | null

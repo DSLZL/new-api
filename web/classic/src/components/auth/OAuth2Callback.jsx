@@ -51,6 +51,25 @@ const OAuth2Callback = (props) => {
       const { success, message, data } = resData;
 
       if (!success) {
+        const businessCode = data?.code;
+        if (businessCode === 'INVITE_REQUIRED') {
+          const aff = (
+            searchParams.get('aff') ||
+            localStorage.getItem('aff') ||
+            ''
+          ).trim();
+          const redirect = searchParams.get('redirect') || '/console/token';
+          const query = new URLSearchParams({
+            provider: props.type || '',
+            redirect,
+          });
+          if (aff) {
+            query.set('aff', aff);
+            localStorage.setItem('aff', aff);
+          }
+          navigate(`/invite-required?${query.toString()}`);
+          return;
+        }
         // 业务错误不重试，直接显示错误
         showError(message || t('授权失败'));
         return;

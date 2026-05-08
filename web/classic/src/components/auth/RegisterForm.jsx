@@ -87,6 +87,7 @@ const RegisterForm = () => {
     username: '',
     password: '',
     password2: '',
+    aff_code: '',
     email: '',
     verification_code: '',
     wechat_verification_code: '',
@@ -129,6 +130,14 @@ const RegisterForm = () => {
   if (affCode) {
     localStorage.setItem('aff', affCode);
   }
+
+  useEffect(() => {
+    const urlAff = new URLSearchParams(window.location.search).get('aff');
+    const localAff = localStorage.getItem('aff') || '';
+    const value = (urlAff || localAff || '').trim();
+    if (!value) return;
+    setInputs((prev) => ({ ...prev, aff_code: value }));
+  }, []);
 
   const status = useMemo(() => {
     if (statusState?.status) return statusState.status;
@@ -268,14 +277,21 @@ const RegisterForm = () => {
           console.debug('Fingerprint collection skipped:', fpErr?.message);
         }
 
-        if (!affCode) {
-          affCode = localStorage.getItem('aff');
+        const inviteCode = (
+          inputs.aff_code ||
+          affCode ||
+          localStorage.getItem('aff') ||
+          ''
+        ).trim();
+        if (inviteCode) {
+          localStorage.setItem('aff', inviteCode);
         }
 
         // ★ 构建 payload，包含用户信息 + 指纹数据
         const payload = {
           ...inputs,
-          aff_code: affCode,
+          aff_code: inviteCode,
+          aff: inviteCode,
         };
         if (fingerprint) {
           payload.fingerprint = fingerprint;
@@ -659,6 +675,20 @@ const RegisterForm = () => {
                   getInputElement={(instance) => {
                     attachKeystrokeCapture(instance);
                   }}
+                />
+
+                <Form.Input
+                  field='aff_code'
+                  label={t('邀请码')}
+                  placeholder={t('请输入邀请人的 4 位邀请码')}
+                  name='aff_code'
+                  onChange={(value) => {
+                    handleChange('aff_code', value);
+                    if (value && value.trim()) {
+                      localStorage.setItem('aff', value.trim());
+                    }
+                  }}
+                  prefix={<IconKey />}
                 />
 
                 {showEmailVerification && (

@@ -54,6 +54,11 @@ type User struct {
 	LastLoginAt      int64          `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 }
 
+var (
+	ErrInviteCodeRequired = errors.New("invite code required")
+	ErrInviteCodeInvalid  = errors.New("invite code invalid")
+)
+
 func (user *User) ToBaseUser() *UserBase {
 	cache := &UserBase{
 		Id:       user.Id,
@@ -312,6 +317,31 @@ func GetUserIdByAffCode(affCode string) (int, error) {
 	var user User
 	err := DB.Select("id").First(&user, "aff_code = ?", affCode).Error
 	return user.Id, err
+}
+
+func NormalizeAffCode(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func ResolveInviterIDFromAffCode(raw string) (int, error) {
+	code := NormalizeAffCode(raw)
+	if code == "" {
+		return 0, ErrInviteCodeRequired
+	}
+	if len(code) != 4 {
+		return 0, ErrInviteCodeInvalid
+	}
+	inviterId, err := GetUserIdByAffCode(code)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrInviteCodeInvalid
+		}
+		return 0, err
+	}
+	if inviterId <= 0 {
+		return 0, ErrInviteCodeInvalid
+	}
+	return inviterId, nil
 }
 
 func DeleteUserById(id int) (err error) {

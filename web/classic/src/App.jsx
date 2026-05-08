@@ -55,6 +55,7 @@ import ModelDeploymentPage from './pages/ModelDeployment';
 import Playground from './pages/Playground';
 import Subscription from './pages/Subscription';
 import OAuth2Callback from './components/auth/OAuth2Callback';
+import InviteRequiredForm from './components/auth/InviteRequiredForm';
 import PersonalSetting from './components/settings/PersonalSetting';
 import Setup from './pages/Setup';
 import SetupCheck from './components/layout/SetupCheck';
@@ -295,6 +296,16 @@ function App() {
           element={
             <Suspense fallback={<Loading></Loading>} key={location.pathname}>
               <PasswordResetForm />
+            </Suspense>
+          }
+        />
+        <Route
+          path='/invite-required'
+          element={
+            <Suspense fallback={<Loading></Loading>} key={location.pathname}>
+              <AuthRedirect>
+                <InviteRequiredForm />
+              </AuthRedirect>
             </Suspense>
           }
         />

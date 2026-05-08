@@ -31,6 +31,21 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+const (
+	InviteCodeInvalidCode  = "INVITE_CODE_INVALID"
+	InviteCodeRequiredCode = "INVITE_CODE_REQUIRED"
+)
+
+func apiInviteError(c *gin.Context, code string, message string) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": false,
+		"message": message,
+		"data": gin.H{
+			"code": code,
+		},
+	})
+}
+
 func Login(c *gin.Context) {
 	if !common.PasswordLoginEnabled {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordLoginDisabled)
@@ -144,48 +159,48 @@ func Logout(c *gin.Context) {
 
 // ─── 注册时客户端指纹数据结构 ───
 type ClientFingerprintData struct {
-	CanvasHash            string   `json:"canvas_hash"`
-	WebGLHash             string   `json:"webgl_hash"`
-	WebGLDeepHash         string   `json:"webgl_deep_hash"`
-	ClientRectsHash       string   `json:"client_rects_hash"`
-	WebGLVendor           string   `json:"webgl_vendor"`
-	WebGLRenderer         string   `json:"webgl_renderer"`
-	MediaDevicesHash      string   `json:"media_devices_hash"`
-	MediaDeviceCount      string   `json:"media_device_count"`
-	MediaDeviceGroupHash  string   `json:"media_device_group_hash"`
-	MediaDeviceTotal      int      `json:"media_device_total"`
-	SpeechVoicesHash      string   `json:"speech_voices_hash"`
-	SpeechVoiceCount      int      `json:"speech_voice_count"`
-	SpeechLocalVoiceCount int      `json:"speech_local_voice_count"`
-	AudioHash             string   `json:"audio_hash"`
-	FontsHash             string   `json:"fonts_hash"`
-	FontsList             string   `json:"fonts_list"`
-	ScreenWidth           int      `json:"screen_width"`
-	ScreenHeight          int      `json:"screen_height"`
-	ColorDepth            int      `json:"color_depth"`
-	PixelRatio            float32  `json:"pixel_ratio"`
-	CPUCores              int      `json:"cpu_cores"`
-	DeviceMemory          float32  `json:"device_memory"`
-	MaxTouch              int      `json:"max_touch"`
-	Timezone              string   `json:"timezone"`
-	TZOffset              int      `json:"tz_offset"`
-	Languages             string   `json:"languages"`
-	Platform              string   `json:"platform"`
-	DoNotTrack            string   `json:"do_not_track"`
-	CookieEnabled         bool     `json:"cookie_enabled"`
-	LocalDeviceID         string   `json:"local_device_id"`
-	PersistentID          string   `json:"persistent_id"`
-	PersistentIDSource    string   `json:"id_source"`
-	ETagID                string   `json:"etag_id"`
-	WebRTCLocalIPs        []string `json:"webrtc_local_ips"`
-	WebRTCPublicIPs       []string `json:"webrtc_public_ips"`
-	CompositeHash         string   `json:"composite_hash"`
-	DNSResolverIP         string   `json:"dns_resolver_ip"`
-	DNSProbeID            string   `json:"dns_probe_id"`
-	SessionID             string   `json:"session_id"`
-	SessionStartAt        int64    `json:"session_start_at"`
-	SessionEndAt          int64    `json:"session_end_at"`
-	HTTPHeaderHash        string   `json:"http_header_hash"`
+	CanvasHash            string                       `json:"canvas_hash"`
+	WebGLHash             string                       `json:"webgl_hash"`
+	WebGLDeepHash         string                       `json:"webgl_deep_hash"`
+	ClientRectsHash       string                       `json:"client_rects_hash"`
+	WebGLVendor           string                       `json:"webgl_vendor"`
+	WebGLRenderer         string                       `json:"webgl_renderer"`
+	MediaDevicesHash      string                       `json:"media_devices_hash"`
+	MediaDeviceCount      string                       `json:"media_device_count"`
+	MediaDeviceGroupHash  string                       `json:"media_device_group_hash"`
+	MediaDeviceTotal      int                          `json:"media_device_total"`
+	SpeechVoicesHash      string                       `json:"speech_voices_hash"`
+	SpeechVoiceCount      int                          `json:"speech_voice_count"`
+	SpeechLocalVoiceCount int                          `json:"speech_local_voice_count"`
+	AudioHash             string                       `json:"audio_hash"`
+	FontsHash             string                       `json:"fonts_hash"`
+	FontsList             string                       `json:"fonts_list"`
+	ScreenWidth           int                          `json:"screen_width"`
+	ScreenHeight          int                          `json:"screen_height"`
+	ColorDepth            int                          `json:"color_depth"`
+	PixelRatio            float32                      `json:"pixel_ratio"`
+	CPUCores              int                          `json:"cpu_cores"`
+	DeviceMemory          float32                      `json:"device_memory"`
+	MaxTouch              int                          `json:"max_touch"`
+	Timezone              string                       `json:"timezone"`
+	TZOffset              int                          `json:"tz_offset"`
+	Languages             string                       `json:"languages"`
+	Platform              string                       `json:"platform"`
+	DoNotTrack            string                       `json:"do_not_track"`
+	CookieEnabled         bool                         `json:"cookie_enabled"`
+	LocalDeviceID         string                       `json:"local_device_id"`
+	PersistentID          string                       `json:"persistent_id"`
+	PersistentIDSource    string                       `json:"id_source"`
+	ETagID                string                       `json:"etag_id"`
+	WebRTCLocalIPs        []string                     `json:"webrtc_local_ips"`
+	WebRTCPublicIPs       []string                     `json:"webrtc_public_ips"`
+	CompositeHash         string                       `json:"composite_hash"`
+	DNSResolverIP         string                       `json:"dns_resolver_ip"`
+	DNSProbeID            string                       `json:"dns_probe_id"`
+	SessionID             string                       `json:"session_id"`
+	SessionStartAt        int64                        `json:"session_start_at"`
+	SessionEndAt          int64                        `json:"session_end_at"`
+	HTTPHeaderHash        string                       `json:"http_header_hash"`
 	Keystroke             *KeystrokeFingerprintRequest `json:"keystroke,omitempty"`
 	Mouse                 *MouseFingerprintRequest     `json:"mouse,omitempty"`
 }
@@ -273,8 +288,26 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
-	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, _ := model.GetUserIdByAffCode(affCode)
+	affCode := model.NormalizeAffCode(user.AffCode) // this code is the inviter's code, not the user's own code
+	inviterId := 0
+	if common.InviteOnlyRegistrationEnabled {
+		resolvedInviterId, resolveErr := model.ResolveInviterIDFromAffCode(affCode)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, model.ErrInviteCodeRequired) {
+				apiInviteError(c, InviteCodeRequiredCode, i18n.T(c, i18n.MsgUserAffCodeEmpty))
+				return
+			}
+			if errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
+				apiInviteError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
+				return
+			}
+			common.ApiError(c, resolveErr)
+			return
+		}
+		inviterId = resolvedInviterId
+	} else if affCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(affCode)
+	}
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,

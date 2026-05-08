@@ -319,6 +319,23 @@ export function useUsersColumns(): ColumnDef<User>[] {
       meta: { label: t('Invite Info'), mobileHidden: true },
     },
     {
+      id: 'inviter_id',
+      accessorKey: 'inviter_id',
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} title={t('Inviter ID')} />
+      ),
+      cell: ({ row }) => {
+        const inviterId = row.original.inviter_id || 0
+        return (
+          <span className='text-muted-foreground text-sm'>
+            {inviterId > 0 ? inviterId : '-'}
+          </span>
+        )
+      },
+      enableSorting: false,
+      meta: { label: t('Inviter ID'), mobileHidden: true },
+    },
+    {
       accessorKey: 'created_at',
       header: ({ column }) => (
         <DataTableColumnHeader column={column} title={t('Created At')} />

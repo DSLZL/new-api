@@ -35,7 +35,10 @@ import { registerFormSchema } from '@/features/auth/constants'
 import { useAuthRedirect } from '@/features/auth/hooks/use-auth-redirect'
 import { useEmailVerification } from '@/features/auth/hooks/use-email-verification'
 import { useTurnstile } from '@/features/auth/hooks/use-turnstile'
-import { getAffiliateCode } from '@/features/auth/lib/storage'
+import {
+  getAffiliateCode,
+  saveAffiliateCode,
+} from '@/features/auth/lib/storage'
 
 export function SignUpForm({
   className,
@@ -76,10 +79,12 @@ export function SignUpForm({
       email: '',
       password: '',
       confirmPassword: '',
+      inviteCode: '',
     },
   })
 
   const emailValue = form.watch('email')
+  const inviteCodeValue = form.watch('inviteCode')
   const emailVerificationRequired = !!status?.email_verification
   const hasUserAgreement = Boolean(status?.user_agreement_enabled)
   const hasPrivacyPolicy = Boolean(status?.privacy_policy_enabled)
@@ -89,6 +94,10 @@ export function SignUpForm({
     status?.data?.oauth_register_enabled ??
     true
   const hasWeChatLogin = Boolean(status?.wechat_login)
+  const inviteOnlyRegistrationEnabled = Boolean(
+    status?.invite_only_registration_enabled ??
+      status?.data?.invite_only_registration_enabled
+  )
 
   const wechatQrCodeUrl = useMemo(() => {
     return (
@@ -111,6 +120,20 @@ export function SignUpForm({
       setAgreedToLegal(true)
     }
   }, [requiresLegalConsent])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const aff = params.get('aff')?.trim()
+    if (!aff) return
+    saveAffiliateCode(aff)
+    form.setValue('inviteCode', aff)
+  }, [form])
+
+  useEffect(() => {
+    const normalized = inviteCodeValue?.trim() ?? ''
+    if (!normalized) return
+    saveAffiliateCode(normalized)
+  }, [inviteCodeValue])
 
   async function onSubmit(data: z.infer<typeof registerFormSchema>) {
     if (requiresLegalConsent && !agreedToLegal) {
@@ -137,7 +160,8 @@ export function SignUpForm({
         password: data.password,
         email: data.email || undefined,
         verification_code: verificationCode || undefined,
-        aff: getAffiliateCode(),
+        aff: data.inviteCode?.trim() || getAffiliateCode(),
+        aff_code: data.inviteCode?.trim() || getAffiliateCode(),
         turnstile: turnstileToken,
       })
 
@@ -246,6 +270,29 @@ export function SignUpForm({
               <FormControl>
                 <PasswordInput placeholder={t('Confirm password')} {...field} />
               </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
+        <FormField
+          control={form.control}
+          name='inviteCode'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Invite code')}</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder={t("Use your inviter's 4-character code")}
+                  autoComplete='off'
+                  {...field}
+                />
+              </FormControl>
+              {inviteOnlyRegistrationEnabled ? (
+                <p className='text-muted-foreground text-xs'>
+                  {t('Invite code is required for registration')}
+                </p>
+              ) : null}
               <FormMessage />
             </FormItem>
           )}

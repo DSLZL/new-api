@@ -6,6 +6,7 @@ import type {
   TwoFAPayload,
   RegisterPayload,
   ApiResponse,
+  ApiBusinessResponse,
 } from './types'
 
 // ============================================================================
@@ -78,6 +79,15 @@ export async function getOAuthState(): Promise<string> {
 // WeChat login by authorization code
 export async function wechatLoginByCode(code: string): Promise<ApiResponse> {
   const res = await api.get('/api/oauth/wechat', { params: { code } })
+  return res.data
+}
+
+export async function continueOAuthWithInvite(
+  inviteCode: string
+): Promise<ApiBusinessResponse> {
+  const res = await api.post('/api/oauth/invite/continue', {
+    invite_code: inviteCode,
+  })
   return res.data
 }
 

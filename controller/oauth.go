@@ -1,9 +1,12 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -13,6 +16,140 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+const (
+	OAuthCodeInviteRequired  = "INVITE_REQUIRED"
+	OAuthCodePendingNotFound = "OAUTH_PENDING_NOT_FOUND"
+	OAuthCodePendingExpired  = "OAUTH_PENDING_EXPIRED"
+)
+
+const oauthPendingSessionKey = "oauth_pending_registration"
+const oauthPendingSessionTTL = 10 * time.Minute
+
+type pendingOAuthRegistration struct {
+	Provider       string `json:"provider"`
+	ProviderUserID string `json:"provider_user_id"`
+	Username       string `json:"username"`
+	DisplayName    string `json:"display_name"`
+	Email          string `json:"email"`
+	ExpiresAt      int64  `json:"expires_at"`
+}
+
+type OAuthInviteRequiredError struct {
+	Pending *pendingOAuthRegistration
+}
+
+func (e *OAuthInviteRequiredError) Error() string {
+	return "invite code required for oauth registration"
+}
+
+func (e *OAuthInviteRequiredError) Code() string {
+	return OAuthCodeInviteRequired
+}
+
+func buildPendingOAuthRegistration(provider oauth.Provider, oauthUser *oauth.OAuthUser) *pendingOAuthRegistration {
+	username := provider.GetProviderPrefix() + strconv.Itoa(model.GetMaxUserId()+1)
+	if oauthUser.Username != "" {
+		if exists, err := model.CheckUserExistOrDeleted(oauthUser.Username, ""); err == nil && !exists {
+			if len(oauthUser.Username) <= model.UserNameMaxLength {
+				username = oauthUser.Username
+			}
+		}
+	}
+
+	displayName := provider.GetName() + " User"
+	if oauthUser.DisplayName != "" {
+		displayName = oauthUser.DisplayName
+	} else if oauthUser.Username != "" {
+		displayName = oauthUser.Username
+	}
+
+	email := strings.TrimSpace(oauthUser.Email)
+	if email != "" {
+		if exists, err := model.CheckUserExistOrDeleted("", email); err != nil || exists {
+			email = ""
+		}
+	}
+
+	return &pendingOAuthRegistration{
+		Provider:       provider.GetName(),
+		ProviderUserID: oauthUser.ProviderUserID,
+		Username:       username,
+		DisplayName:    displayName,
+		Email:          email,
+		ExpiresAt:      time.Now().Add(oauthPendingSessionTTL).Unix(),
+	}
+}
+
+func persistPendingOAuthRegistration(session sessions.Session, pending *pendingOAuthRegistration) error {
+	session.Set(oauthPendingSessionKey, pending)
+	session.Delete("aff")
+	return session.Save()
+}
+
+func clearPendingOAuthRegistration(session sessions.Session) error {
+	session.Delete(oauthPendingSessionKey)
+	return session.Save()
+}
+
+func readPendingOAuthRegistration(session sessions.Session) (*pendingOAuthRegistration, error) {
+	raw := session.Get(oauthPendingSessionKey)
+	if raw == nil {
+		return nil, &OAuthPendingNotFoundError{}
+	}
+
+	var pending pendingOAuthRegistration
+	switch v := raw.(type) {
+	case pendingOAuthRegistration:
+		pending = v
+	case *pendingOAuthRegistration:
+		if v == nil {
+			return nil, &OAuthPendingNotFoundError{}
+		}
+		pending = *v
+	case map[string]any:
+		if provider, ok := v["provider"].(string); ok {
+			pending.Provider = provider
+		}
+		if providerUserId, ok := v["provider_user_id"].(string); ok {
+			pending.ProviderUserID = providerUserId
+		}
+		if username, ok := v["username"].(string); ok {
+			pending.Username = username
+		}
+		if displayName, ok := v["display_name"].(string); ok {
+			pending.DisplayName = displayName
+		}
+		if email, ok := v["email"].(string); ok {
+			pending.Email = email
+		}
+		switch exp := v["expires_at"].(type) {
+		case int64:
+			pending.ExpiresAt = exp
+		case int:
+			pending.ExpiresAt = int64(exp)
+		case float64:
+			pending.ExpiresAt = int64(exp)
+		}
+	default:
+		return nil, &OAuthPendingNotFoundError{}
+	}
+
+	if pending.Provider == "" || pending.ProviderUserID == "" || pending.Username == "" {
+		return nil, &OAuthPendingNotFoundError{}
+	}
+	return &pending, nil
+}
+
+func jsonOAuthBusinessError(c *gin.Context, code string, message string) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": false,
+		"message": message,
+		"data": gin.H{
+			"code": code,
+		},
+	})
+}
 
 // providerParams returns map with Provider key for i18n templates
 func providerParams(name string) map[string]any {
@@ -106,7 +243,13 @@ func HandleOAuth(c *gin.Context) {
 	// 7. Find or create user
 	user, err := findOrCreateOAuthUser(c, provider, oauthUser, session)
 	if err != nil {
-		switch err.(type) {
+		switch e := err.(type) {
+		case *OAuthInviteRequiredError:
+			if saveErr := persistPendingOAuthRegistration(session, e.Pending); saveErr != nil {
+				common.ApiError(c, saveErr)
+				return
+			}
+			jsonOAuthBusinessError(c, e.Code(), i18n.T(c, i18n.MsgUserAffCodeEmpty))
 		case *OAuthUserDeletedError:
 			common.ApiErrorI18n(c, i18n.MsgOAuthUserDeleted)
 		case *OAuthRegistrationDisabledError:
@@ -237,37 +380,36 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 		return nil, &OAuthRegistrationDisabledError{}
 	}
 
-	// Set up new user
-	user.Username = provider.GetProviderPrefix() + strconv.Itoa(model.GetMaxUserId()+1)
+	pending := buildPendingOAuthRegistration(provider, oauthUser)
 
-	if oauthUser.Username != "" {
-		if exists, err := model.CheckUserExistOrDeleted(oauthUser.Username, ""); err == nil && !exists {
-			// 防止索引退化
-			if len(oauthUser.Username) <= model.UserNameMaxLength {
-				user.Username = oauthUser.Username
-			}
+	// Handle affiliate code
+	affCode := ""
+	if rawAffCode := session.Get("aff"); rawAffCode != nil {
+		if strAffCode, ok := rawAffCode.(string); ok {
+			affCode = strAffCode
 		}
 	}
 
-	if oauthUser.DisplayName != "" {
-		user.DisplayName = oauthUser.DisplayName
-	} else if oauthUser.Username != "" {
-		user.DisplayName = oauthUser.Username
-	} else {
-		user.DisplayName = provider.GetName() + " User"
+	inviterId := 0
+	if common.InviteOnlyRegistrationEnabled {
+		resolvedInviterId, resolveErr := model.ResolveInviterIDFromAffCode(affCode)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, model.ErrInviteCodeRequired) || errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
+				return nil, &OAuthInviteRequiredError{Pending: pending}
+			}
+			return nil, resolveErr
+		}
+		inviterId = resolvedInviterId
+	} else if normalizedAffCode := model.NormalizeAffCode(affCode); normalizedAffCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(normalizedAffCode)
 	}
-	if oauthUser.Email != "" {
-		user.Email = oauthUser.Email
-	}
+
+	// Set up new user
+	user.Username = pending.Username
+	user.DisplayName = pending.DisplayName
+	user.Email = pending.Email
 	user.Role = common.RoleCommonUser
 	user.Status = common.UserStatusEnabled
-
-	// Handle affiliate code
-	affCode := session.Get("aff")
-	inviterId := 0
-	if affCode != nil {
-		inviterId, _ = model.GetUserIdByAffCode(affCode.(string))
-	}
 
 	// Use transaction to ensure user creation and OAuth binding are atomic
 	if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
@@ -330,6 +472,120 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 	return user, nil
 }
 
+func ContinueOAuthWithInvite(c *gin.Context) {
+	if !common.RegisterEnabled {
+		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
+		return
+	}
+
+	var req struct {
+		InviteCode string `json:"invite_code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	session := sessions.Default(c)
+	pending, pendingErr := readPendingOAuthRegistration(session)
+	if pendingErr != nil {
+		switch pendingErr.(type) {
+		case *OAuthPendingNotFoundError:
+			jsonOAuthBusinessError(c, OAuthCodePendingNotFound, i18n.T(c, i18n.MsgInvalidParams))
+		default:
+			common.ApiError(c, pendingErr)
+		}
+		return
+	}
+	if pending.ExpiresAt <= time.Now().Unix() {
+		_ = clearPendingOAuthRegistration(session)
+		jsonOAuthBusinessError(c, OAuthCodePendingExpired, i18n.T(c, i18n.MsgInvalidParams))
+		return
+	}
+
+	inviterId, resolveErr := model.ResolveInviterIDFromAffCode(req.InviteCode)
+	if resolveErr != nil {
+		if errors.Is(resolveErr, model.ErrInviteCodeRequired) || errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
+			jsonOAuthBusinessError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
+			return
+		}
+		common.ApiError(c, resolveErr)
+		return
+	}
+
+	provider := oauth.GetProvider(strings.ToLower(pending.Provider))
+	if provider == nil {
+		_ = clearPendingOAuthRegistration(session)
+		common.ApiErrorI18n(c, i18n.MsgOAuthUnknownProvider)
+		return
+	}
+	if !provider.IsEnabled() {
+		_ = clearPendingOAuthRegistration(session)
+		common.ApiErrorI18n(c, i18n.MsgOAuthNotEnabled, providerParams(provider.GetName()))
+		return
+	}
+	if provider.IsUserIDTaken(pending.ProviderUserID) {
+		// Another session may have completed registration first.
+		user := &model.User{}
+		if err := provider.FillUserByProviderID(user, pending.ProviderUserID); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if user.Id == 0 {
+			_ = clearPendingOAuthRegistration(session)
+			common.ApiErrorI18n(c, i18n.MsgOAuthUserDeleted)
+			return
+		}
+		_ = clearPendingOAuthRegistration(session)
+		setupLogin(user, c)
+		return
+	}
+
+	user := &model.User{
+		Username:    pending.Username,
+		DisplayName: pending.DisplayName,
+		Email:       pending.Email,
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := user.InsertWithTx(tx, inviterId); err != nil {
+			return err
+		}
+		if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
+			binding := &model.UserOAuthBinding{
+				UserId:         user.Id,
+				ProviderId:     genericProvider.GetProviderId(),
+				ProviderUserId: pending.ProviderUserID,
+			}
+			if err := model.CreateUserOAuthBindingWithTx(tx, binding); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		provider.SetProviderUserID(user, pending.ProviderUserID)
+		return tx.Model(user).Updates(map[string]interface{}{
+			"github_id":   user.GitHubId,
+			"discord_id":  user.DiscordId,
+			"oidc_id":     user.OidcId,
+			"linux_do_id": user.LinuxDOId,
+			"wechat_id":   user.WeChatId,
+			"telegram_id": user.TelegramId,
+		}).Error
+	}); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	user.FinalizeOAuthUserCreation(inviterId)
+	if err := clearPendingOAuthRegistration(session); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	setupLogin(user, c)
+}
+
 // Error types for OAuth
 type OAuthUserDeletedError struct{}
 
@@ -341,6 +597,12 @@ type OAuthRegistrationDisabledError struct{}
 
 func (e *OAuthRegistrationDisabledError) Error() string {
 	return "registration is disabled"
+}
+
+type OAuthPendingNotFoundError struct{}
+
+func (e *OAuthPendingNotFoundError) Error() string {
+	return "oauth pending registration not found"
 }
 
 // handleOAuthError handles OAuth errors and returns translated message
