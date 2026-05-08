@@ -36,3 +36,7 @@ data/
 token_estimator_test.go
 skills-lock.json
 .serena/
+.spec-workflow/
+1.md
+
+token_estimator_test.go
