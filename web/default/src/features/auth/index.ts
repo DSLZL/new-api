@@ -13,6 +13,7 @@ export {
   getOAuthState,
   githubOAuthStart,
   wechatLoginByCode,
+  continueOAuthWithInvite,
 } from './api'
 
 // ============================================================================

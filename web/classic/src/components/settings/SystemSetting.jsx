@@ -49,6 +49,7 @@ const SystemSetting = () => {
   let [inputs, setInputs] = useState({
     PasswordLoginEnabled: '',
     PasswordRegisterEnabled: '',
+    InviteOnlyRegistrationEnabled: '',
     EmailVerificationEnabled: '',
     GitHubOAuthEnabled: '',
     GitHubClientId: '',
@@ -174,6 +175,7 @@ const SystemSetting = () => {
             break;
           case 'PasswordLoginEnabled':
           case 'PasswordRegisterEnabled':
+          case 'InviteOnlyRegistrationEnabled':
           case 'EmailVerificationEnabled':
           case 'GitHubOAuthEnabled':
           case 'WeChatAuthEnabled':
@@ -1007,6 +1009,15 @@ const SystemSetting = () => {
                         }
                       >
                         {t('允许通过密码进行注册')}
+                      </Form.Checkbox>
+                      <Form.Checkbox
+                        field='InviteOnlyRegistrationEnabled'
+                        noLabel
+                        onChange={(e) =>
+                          handleCheckboxChange('InviteOnlyRegistrationEnabled', e)
+                        }
+                      >
+                        {t('仅邀请码注册')}
                       </Form.Checkbox>
                       <Form.Checkbox
                         field='EmailVerificationEnabled'

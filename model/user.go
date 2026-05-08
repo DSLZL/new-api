@@ -54,6 +54,11 @@ type User struct {
 	LastLoginAt      int64          `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 }
 
+var (
+	ErrInviteCodeRequired = errors.New("invite code required")
+	ErrInviteCodeInvalid  = errors.New("invite code invalid")
+)
+
 func (user *User) ToBaseUser() *UserBase {
 	cache := &UserBase{
 		Id:       user.Id,
@@ -306,12 +311,59 @@ func GetUserById(id int, selectAll bool) (*User, error) {
 }
 
 func GetUserIdByAffCode(affCode string) (int, error) {
-	if affCode == "" {
+	code := strings.TrimSpace(affCode)
+	if code == "" {
 		return 0, errors.New("affCode 为空！")
 	}
 	var user User
-	err := DB.Select("id").First(&user, "aff_code = ?", affCode).Error
-	return user.Id, err
+	// Prefer exact match first to avoid ambiguity and keep index-friendly lookup.
+	if err := DB.Select("id").First(&user, "aff_code = ?", code).Error; err == nil {
+		return user.Id, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+
+	// Fallback: case-insensitive lookup for legacy mixed-case invite codes.
+	var matched []User
+	err := DB.Select("id").
+		Where("LOWER(aff_code) = ?", strings.ToLower(code)).
+		Limit(2).
+		Find(&matched).Error
+	if err != nil {
+		return 0, err
+	}
+	if len(matched) == 0 {
+		return 0, gorm.ErrRecordNotFound
+	}
+	if len(matched) > 1 {
+		return 0, ErrInviteCodeInvalid
+	}
+	return matched[0].Id, nil
+}
+
+func NormalizeAffCode(raw string) string {
+	return strings.TrimSpace(raw)
+}
+
+func ResolveInviterIDFromAffCode(raw string) (int, error) {
+	code := NormalizeAffCode(raw)
+	if code == "" {
+		return 0, ErrInviteCodeRequired
+	}
+	if len(code) != 4 {
+		return 0, ErrInviteCodeInvalid
+	}
+	inviterId, err := GetUserIdByAffCode(code)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, ErrInviteCodeInvalid) {
+			return 0, ErrInviteCodeInvalid
+		}
+		return 0, err
+	}
+	if inviterId <= 0 {
+		return 0, ErrInviteCodeInvalid
+	}
+	return inviterId, nil
 }
 
 func DeleteUserById(id int) (err error) {
@@ -386,6 +438,7 @@ func (user *User) Insert(inviterId int) error {
 			return err
 		}
 	}
+	user.InviterId = inviterId
 	user.Quota = common.QuotaForNewUser
 	//user.SetAccessToken(common.GetUUID())
 	user.AffCode = common.GetRandomString(4)
@@ -445,6 +498,7 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			return err
 		}
 	}
+	user.InviterId = inviterId
 	user.Quota = common.QuotaForNewUser
 	user.AffCode = common.GetRandomString(4)
 

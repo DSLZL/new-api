@@ -358,6 +358,12 @@ export const getUsersColumns = ({
       render: (text, record, index) => renderInviteInfo(text, record, t),
     },
     {
+      title: t('邀请人ID'),
+      dataIndex: 'inviter_id',
+      render: (text, record) =>
+        record.inviter_id && record.inviter_id > 0 ? record.inviter_id : '-',
+    },
+    {
       title: t('创建时间'),
       dataIndex: 'created_at',
       render: renderTimestamp,

@@ -22,6 +22,7 @@ import { useUpdateOption } from '../hooks/use-update-option'
 const basicAuthSchema = z.object({
   PasswordLoginEnabled: z.boolean(),
   PasswordRegisterEnabled: z.boolean(),
+  InviteOnlyRegistrationEnabled: z.boolean(),
   EmailVerificationEnabled: z.boolean(),
   RegisterEnabled: z.boolean(),
   EmailDomainRestrictionEnabled: z.boolean(),
@@ -145,6 +146,29 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
                   </FormLabel>
                   <FormDescription>
                     {t('Allow registration with password')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='InviteOnlyRegistrationEnabled'
+            render={({ field }) => (
+              <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-base'>
+                    {t('Invite-only Registration')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t('Require invite code for registration')}
                   </FormDescription>
                 </div>
                 <FormControl>

@@ -3795,5 +3795,17 @@
     "含时间条件": "Time rules",
     "含请求条件": "Request rules",
     "（当前仅支持易支付接口，默认使用上方服务器地址作为回调地址！）": "(Currently only supports Epay interface, the default callback address is the server address above!)"
-  }
+  },
+  "邀请码": "Invite code",
+  "请输入邀请人的 4 位邀请码": "Use your inviter's 4-character code",
+  "注册需要填写邀请码": "Invite code is required for registration",
+  "请输入邀请码以完成注册": "Enter invite code to complete registration",
+  "邀请码无效": "Invalid invite code",
+  "OAuth 会话已过期，请重试": "OAuth session expired, please try again",
+  "未找到 OAuth 会话，请重试": "OAuth session not found, please try again",
+  "仅邀请码注册": "Invite-only Registration",
+  "邀请人ID": "Inviter ID",
+  "邀请码将显示在这里": "Invite code will appear here",
+  "复制邀请码": "Copy invite code",
+  "邀请码已复制到剪切板": "Invite code copied to clipboard"
 }

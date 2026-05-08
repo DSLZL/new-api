@@ -7,4 +7,12 @@ Makefile
 docs
 .eslintcache
 .gocache
-/web/node_modules
+**/node_modules
+.tmp
+.tmp_runtime
+logs
+*.log
+one-api.db
+one-api.db-*
+.env
+.env.*

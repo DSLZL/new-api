@@ -1,4 +1,4 @@
-name: Publish Docker image (Multi-arch)
+name: Publish Docker image (GHCR, native amd64+arm64)
 
 on:
   push:
@@ -8,13 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag name to build (e.g., v0.10.8-alpha.3)'
+        description: Tag name to build (e.g., v0.10.8-alpha.3)
         required: true
         type: string
 
+concurrency:
+  group: docker-build-${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   build_single_arch:
-    name: Build & push (${{ matrix.arch }})
+    name: Build & push (${{ matrix.arch }}) [native]
     strategy:
       fail-fast: false
       matrix:
@@ -26,116 +30,128 @@ jobs:
             platform: linux/arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
-
     permissions:
-      packages: write
       contents: read
-      id-token: write
+      packages: write
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: ${{ github.event_name == 'workflow_dispatch' && 0 || 1 }}
+          fetch-depth: 1
+          fetch-tags: true
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Resolve tag & write VERSION
-        id: version
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             TAG="${{ github.event.inputs.tag }}"
             if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-              echo "::error::Tag '$TAG' does not exist"
+              echo "Error: Tag '$TAG' does not exist in the repository"
               exit 1
             fi
           else
-            TAG=${GITHUB_REF#refs/tags/}
+            TAG="${GITHUB_REF#refs/tags/}"
           fi
-          echo "TAG=${TAG}" >> $GITHUB_ENV
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "${TAG}" > VERSION
-          echo "Building tag: ${TAG} for ${{ matrix.arch }}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "$TAG" > VERSION
+          echo "Building tag: $TAG for ${{ matrix.arch }}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: calciumion/new-api
+          images: ${{ env.IMAGE }}
 
-      - name: Build & push
+      - name: Build & push single-arch
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
+          file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            calciumion/new-api:${{ env.TAG }}-${{ matrix.arch }}
-            calciumion/new-api:latest-${{ matrix.arch }}
+            ${{ env.IMAGE }}:${{ env.TAG }}-${{ matrix.arch }}
+            ${{ env.IMAGE }}:latest-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
+          cache-from: |
+            type=gha,scope=docker-build-${{ matrix.arch }}
+            type=gha,scope=docker-build-shared
+          cache-to: |
+            type=gha,mode=max,scope=docker-build-${{ matrix.arch }}
+            type=gha,mode=max,scope=docker-build-shared
+          provenance: false
+          sbom: false
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Sign image with cosign
-        run: cosign sign --yes calciumion/new-api@${{ steps.build.outputs.digest }}
-
-      - name: Image summary
+      - name: Output digest
         run: |
-          echo "### Docker Image Digest (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "calciumion/new-api:${TAG}-${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### GHCR Image Digest (${{ matrix.arch }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.IMAGE }}:${{ env.TAG }}-${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Cache scopes used: \`docker-build-${{ matrix.arch }}\`, \`docker-build-shared\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dockerfile cache mounts enabled: bun cache, go module cache, go build cache." >> "$GITHUB_STEP_SUMMARY"
 
   create_manifests:
-    name: Create multi-arch manifests
+    name: Create multi-arch manifests (GHCR)
     needs: [build_single_arch]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      - name: Set version
-        run: echo "TAG=${{ needs.build_single_arch.outputs.tag }}" >> $GITHUB_ENV
+      - name: Resolve tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "TAG=${{ github.event.inputs.tag }}" >> "$GITHUB_ENV"
+          else
+            echo "TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+          fi
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create & push manifest (version)
         run: |
           docker buildx imagetools create \
-            -t calciumion/new-api:${TAG} \
-            calciumion/new-api:${TAG}-amd64 \
-            calciumion/new-api:${TAG}-arm64
+            -t "${IMAGE}:${TAG}" \
+            "${IMAGE}:${TAG}-amd64" \
+            "${IMAGE}:${TAG}-arm64"
 
       - name: Create & push manifest (latest)
         run: |
           docker buildx imagetools create \
-            -t calciumion/new-api:latest \
-            calciumion/new-api:latest-amd64 \
-            calciumion/new-api:latest-arm64
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:latest-amd64" \
+            "${IMAGE}:latest-arm64"
 
-      - name: Manifest summary
+      - name: Output manifest digest
         run: |
-          echo "### Multi-arch Manifest" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          docker buildx imagetools inspect calciumion/new-api:${TAG} >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### GHCR Multi-arch Manifest (${TAG})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

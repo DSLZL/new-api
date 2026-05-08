@@ -1752,7 +1752,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "Force a syntactically valid JSON response",
@@ -4399,6 +4399,18 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Invite code": "Invite code",
+    "Use your inviter's 4-character code": "Use your inviter's 4-character code",
+    "Invite code is required for registration": "Invite code is required for registration",
+    "Invite-only Registration": "Invite-only Registration",
+    "Require invite code for registration": "Require invite code for registration",
+    "Please enter invite code": "Please enter invite code",
+    "Invalid invite code": "Invalid invite code",
+    "Enter invite code to complete registration": "Enter invite code to complete registration",
+    "OAuth session expired, please try again": "OAuth session expired, please try again",
+    "OAuth session not found, please try again": "OAuth session not found, please try again",
+    "Inviter ID": "Inviter ID",
+    "Copy invite code": "Copy invite code"
   }
 }

@@ -28,8 +28,10 @@ import { Route as errors401RouteImport } from './routes/(errors)/401'
 import { Route as authSignUpRouteImport } from './routes/(auth)/sign-up'
 import { Route as authSignInRouteImport } from './routes/(auth)/sign-in'
 import { Route as authResetRouteImport } from './routes/(auth)/reset'
+import { Route as authRegisterRouteImport } from './routes/(auth)/register'
 import { Route as authOtpRouteImport } from './routes/(auth)/otp'
 import { Route as authOauthRouteImport } from './routes/(auth)/oauth'
+import { Route as authInviteRequiredRouteImport } from './routes/(auth)/invite-required'
 import { Route as authForgotPasswordRouteImport } from './routes/(auth)/forgot-password'
 import { Route as AuthenticatedSystemSettingsRouteRouteImport } from './routes/_authenticated/system-settings/route'
 import { Route as PricingModelIdIndexRouteImport } from './routes/pricing/$modelId/index'
@@ -159,6 +161,11 @@ const authResetRoute = authResetRouteImport.update({
   path: '/reset',
   getParentRoute: () => authRouteRoute,
 } as any)
+const authRegisterRoute = authRegisterRouteImport.update({
+  id: '/register',
+  path: '/register',
+  getParentRoute: () => authRouteRoute,
+} as any)
 const authOtpRoute = authOtpRouteImport.update({
   id: '/otp',
   path: '/otp',
@@ -167,6 +174,11 @@ const authOtpRoute = authOtpRouteImport.update({
 const authOauthRoute = authOauthRouteImport.update({
   id: '/oauth',
   path: '/oauth',
+  getParentRoute: () => authRouteRoute,
+} as any)
+const authInviteRequiredRoute = authInviteRequiredRouteImport.update({
+  id: '/invite-required',
+  path: '/invite-required',
   getParentRoute: () => authRouteRoute,
 } as any)
 const authForgotPasswordRoute = authForgotPasswordRouteImport.update({
@@ -380,8 +392,10 @@ export interface FileRoutesByFullPath {
   '/user-agreement': typeof UserAgreementRoute
   '/system-settings': typeof AuthenticatedSystemSettingsRouteRouteWithChildren
   '/forgot-password': typeof authForgotPasswordRoute
+  '/invite-required': typeof authInviteRequiredRoute
   '/oauth': typeof authOauthRoute
   '/otp': typeof authOtpRoute
+  '/register': typeof authRegisterRoute
   '/reset': typeof authResetRoute
   '/sign-in': typeof authSignInRoute
   '/sign-up': typeof authSignUpRoute
@@ -435,8 +449,10 @@ export interface FileRoutesByTo {
   '/privacy-policy': typeof PrivacyPolicyRoute
   '/user-agreement': typeof UserAgreementRoute
   '/forgot-password': typeof authForgotPasswordRoute
+  '/invite-required': typeof authInviteRequiredRoute
   '/oauth': typeof authOauthRoute
   '/otp': typeof authOtpRoute
+  '/register': typeof authRegisterRoute
   '/reset': typeof authResetRoute
   '/sign-in': typeof authSignInRoute
   '/sign-up': typeof authSignUpRoute
@@ -494,8 +510,10 @@ export interface FileRoutesById {
   '/user-agreement': typeof UserAgreementRoute
   '/_authenticated/system-settings': typeof AuthenticatedSystemSettingsRouteRouteWithChildren
   '/(auth)/forgot-password': typeof authForgotPasswordRoute
+  '/(auth)/invite-required': typeof authInviteRequiredRoute
   '/(auth)/oauth': typeof authOauthRoute
   '/(auth)/otp': typeof authOtpRoute
+  '/(auth)/register': typeof authRegisterRoute
   '/(auth)/reset': typeof authResetRoute
   '/(auth)/sign-in': typeof authSignInRoute
   '/(auth)/sign-up': typeof authSignUpRoute
@@ -552,8 +570,10 @@ export interface FileRouteTypes {
     | '/user-agreement'
     | '/system-settings'
     | '/forgot-password'
+    | '/invite-required'
     | '/oauth'
     | '/otp'
+    | '/register'
     | '/reset'
     | '/sign-in'
     | '/sign-up'
@@ -607,8 +627,10 @@ export interface FileRouteTypes {
     | '/privacy-policy'
     | '/user-agreement'
     | '/forgot-password'
+    | '/invite-required'
     | '/oauth'
     | '/otp'
+    | '/register'
     | '/reset'
     | '/sign-in'
     | '/sign-up'
@@ -665,8 +687,10 @@ export interface FileRouteTypes {
     | '/user-agreement'
     | '/_authenticated/system-settings'
     | '/(auth)/forgot-password'
+    | '/(auth)/invite-required'
     | '/(auth)/oauth'
     | '/(auth)/otp'
+    | '/(auth)/register'
     | '/(auth)/reset'
     | '/(auth)/sign-in'
     | '/(auth)/sign-up'
@@ -870,6 +894,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof authResetRouteImport
       parentRoute: typeof authRouteRoute
     }
+    '/(auth)/register': {
+      id: '/(auth)/register'
+      path: '/register'
+      fullPath: '/register'
+      preLoaderRoute: typeof authRegisterRouteImport
+      parentRoute: typeof authRouteRoute
+    }
     '/(auth)/otp': {
       id: '/(auth)/otp'
       path: '/otp'
@@ -882,6 +913,13 @@ declare module '@tanstack/react-router' {
       path: '/oauth'
       fullPath: '/oauth'
       preLoaderRoute: typeof authOauthRouteImport
+      parentRoute: typeof authRouteRoute
+    }
+    '/(auth)/invite-required': {
+      id: '/(auth)/invite-required'
+      path: '/invite-required'
+      fullPath: '/invite-required'
+      preLoaderRoute: typeof authInviteRequiredRouteImport
       parentRoute: typeof authRouteRoute
     }
     '/(auth)/forgot-password': {
@@ -1134,8 +1172,10 @@ declare module '@tanstack/react-router' {
 
 interface authRouteRouteChildren {
   authForgotPasswordRoute: typeof authForgotPasswordRoute
+  authInviteRequiredRoute: typeof authInviteRequiredRoute
   authOauthRoute: typeof authOauthRoute
   authOtpRoute: typeof authOtpRoute
+  authRegisterRoute: typeof authRegisterRoute
   authResetRoute: typeof authResetRoute
   authSignInRoute: typeof authSignInRoute
   authSignUpRoute: typeof authSignUpRoute
@@ -1144,8 +1184,10 @@ interface authRouteRouteChildren {
 
 const authRouteRouteChildren: authRouteRouteChildren = {
   authForgotPasswordRoute: authForgotPasswordRoute,
+  authInviteRequiredRoute: authInviteRequiredRoute,
   authOauthRoute: authOauthRoute,
   authOtpRoute: authOtpRoute,
+  authRegisterRoute: authRegisterRoute,
   authResetRoute: authResetRoute,
   authSignInRoute: authSignInRoute,
   authSignUpRoute: authSignUpRoute,

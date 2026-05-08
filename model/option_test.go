@@ -25,3 +25,24 @@ func TestUpdateOption_ReturnsDatabaseError(t *testing.T) {
 	err = UpdateOption("FINGERPRINT_WEIGHT_JA4", "0.5")
 	require.Error(t, err)
 }
+
+func TestUpdateOption_InviteOnlyRegistrationEnabled(t *testing.T) {
+	oldOptionMap := common.OptionMap
+	common.OptionMap = map[string]string{}
+	t.Cleanup(func() {
+		common.OptionMap = oldOptionMap
+	})
+
+	oldInviteOnly := common.InviteOnlyRegistrationEnabled
+	t.Cleanup(func() {
+		common.InviteOnlyRegistrationEnabled = oldInviteOnly
+	})
+
+	err := updateOptionMap("InviteOnlyRegistrationEnabled", "true")
+	require.NoError(t, err)
+	require.True(t, common.InviteOnlyRegistrationEnabled)
+
+	err = updateOptionMap("InviteOnlyRegistrationEnabled", "false")
+	require.NoError(t, err)
+	require.False(t, common.InviteOnlyRegistrationEnabled)
+}

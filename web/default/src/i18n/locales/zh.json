@@ -1752,7 +1752,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
     "Force a syntactically valid JSON response": "强制返回语法合法的 JSON",
@@ -4399,6 +4399,18 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Invite code": "邀请码",
+    "Use your inviter's 4-character code": "请输入邀请人的 4 位邀请码",
+    "Invite code is required for registration": "注册需要填写邀请码",
+    "Invite-only Registration": "仅邀请码注册",
+    "Require invite code for registration": "要求注册时必须填写邀请码",
+    "Please enter invite code": "请输入邀请码",
+    "Invalid invite code": "邀请码无效",
+    "Enter invite code to complete registration": "请输入邀请码以完成注册",
+    "OAuth session expired, please try again": "OAuth 会话已过期，请重试",
+    "OAuth session not found, please try again": "未找到 OAuth 会话，请重试",
+    "Inviter ID": "邀请人 ID",
+    "Copy invite code": "复制邀请码"
   }
 }

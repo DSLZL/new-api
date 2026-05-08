@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -54,7 +55,7 @@ func (p *DiscordProvider) ExchangeToken(ctx context.Context, code string, c *gin
 	logger.LogDebug(ctx, "[OAuth-Discord] ExchangeToken: code=%s...", code[:min(len(code), 10)])
 
 	settings := system_setting.GetDiscordSettings()
-	redirectUri := fmt.Sprintf("%s/oauth/discord", system_setting.ServerAddress)
+	redirectUri := buildOAuthRedirectURI(c, "/oauth/discord")
 	values := url.Values{}
 	values.Set("client_id", settings.ClientId)
 	values.Set("client_secret", settings.ClientSecret)
@@ -83,17 +84,31 @@ func (p *DiscordProvider) ExchangeToken(ctx context.Context, code string, c *gin
 
 	logger.LogDebug(ctx, "[OAuth-Discord] ExchangeToken response status: %d", res.StatusCode)
 
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-Discord] ExchangeToken read body error: %s", err.Error()))
+		return nil, err
+	}
+
 	var discordResponse discordOAuthResponse
-	err = json.NewDecoder(res.Body).Decode(&discordResponse)
+	err = json.Unmarshal(body, &discordResponse)
 	if err != nil {
 		logger.LogError(ctx, fmt.Sprintf("[OAuth-Discord] ExchangeToken decode error: %s", err.Error()))
 		return nil, err
 	}
 
-	if discordResponse.AccessToken == "" {
-		logger.LogError(ctx, "[OAuth-Discord] ExchangeToken failed: empty access token")
-		return nil, NewOAuthError(i18n.MsgOAuthTokenFailed, map[string]any{"Provider": "Discord"})
-	}
+		if discordResponse.AccessToken == "" {
+			bodyPreview := strings.TrimSpace(string(body))
+			if len(bodyPreview) > 512 {
+				bodyPreview = bodyPreview[:512]
+			}
+			clientIDPreview := settings.ClientId
+			if len(clientIDPreview) > 8 {
+				clientIDPreview = clientIDPreview[:4] + "..." + clientIDPreview[len(clientIDPreview)-4:]
+			}
+			logger.LogError(ctx, fmt.Sprintf("[OAuth-Discord] ExchangeToken failed: empty access token, status=%d, redirect_uri=%s, client_id=%s, body=%s", res.StatusCode, redirectUri, clientIDPreview, bodyPreview))
+			return nil, NewOAuthError(i18n.MsgOAuthTokenFailed, map[string]any{"Provider": "Discord"})
+		}
 
 	logger.LogDebug(ctx, "[OAuth-Discord] ExchangeToken success: scope=%s", discordResponse.Scope)
 

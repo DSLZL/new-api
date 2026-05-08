@@ -20,6 +20,7 @@ export interface RegisterPayload {
   email?: string
   verification_code?: string
   aff?: string
+  aff_code?: string
   turnstile?: string
 }
 
@@ -61,6 +62,15 @@ export interface ApiResponse {
   success: boolean
   message: string
   data?: unknown
+}
+
+export interface ApiBusinessData {
+  code?: string
+  [key: string]: unknown
+}
+
+export interface ApiBusinessResponse<T = unknown> extends ApiResponse {
+  data?: T | ApiBusinessData
 }
 
 // ============================================================================
@@ -109,6 +119,7 @@ export interface SystemStatus {
     oauth_register_enabled?: boolean
     register_enabled?: boolean
     password_register_enabled?: boolean
+    invite_only_registration_enabled?: boolean
     custom_oauth_providers?: CustomOAuthProviderInfo[]
     [key: string]: unknown
   }
@@ -151,6 +162,7 @@ export interface SystemStatus {
   oauth_register_enabled?: boolean
   register_enabled?: boolean
   password_register_enabled?: boolean
+  invite_only_registration_enabled?: boolean
   custom_oauth_providers?: CustomOAuthProviderInfo[]
   [key: string]: unknown
 }

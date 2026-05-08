@@ -698,6 +698,9 @@ const TopUp = () => {
     const res = await API.get('/api/user/aff');
     const { success, message, data } = res.data;
     if (success) {
+      if (typeof data === 'string' && data.trim()) {
+        localStorage.setItem('aff', data.trim());
+      }
       let link = `${window.location.origin}/register?aff=${data}`;
       setAffLink(link);
     } else {
@@ -725,9 +728,13 @@ const TopUp = () => {
   };
 
   // 复制邀请链接
-  const handleAffLinkClick = async () => {
-    await copy(affLink);
-    showSuccess(t('邀请链接已复制到剪切板'));
+  const handleAffLinkClick = async (value, isInviteCode = false) => {
+    const text = value || affLink;
+    if (!text) return;
+    await copy(text);
+    showSuccess(
+      isInviteCode ? t('邀请码已复制到剪切板') : t('邀请链接已复制到剪切板'),
+    );
   };
 
   // URL 参数自动打开账单弹窗（支付回跳时触发）

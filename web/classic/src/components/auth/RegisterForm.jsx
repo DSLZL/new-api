@@ -87,6 +87,7 @@ const RegisterForm = () => {
     username: '',
     password: '',
     password2: '',
+    aff_code: '',
     email: '',
     verification_code: '',
     wechat_verification_code: '',
@@ -130,6 +131,14 @@ const RegisterForm = () => {
     localStorage.setItem('aff', affCode);
   }
 
+  useEffect(() => {
+    const urlAff = new URLSearchParams(window.location.search).get('aff');
+    const localAff = localStorage.getItem('aff') || '';
+    const value = (urlAff || localAff || '').trim();
+    if (!value) return;
+    setInputs((prev) => ({ ...prev, aff_code: value }));
+  }, []);
+
   const status = useMemo(() => {
     if (statusState?.status) return statusState.status;
     const savedStatus = localStorage.getItem('status');
@@ -142,6 +151,10 @@ const RegisterForm = () => {
   }, [statusState?.status]);
   const hasCustomOAuthProviders =
     (status.custom_oauth_providers || []).length > 0;
+  const fingerprintEnabled = Boolean(status?.fingerprint_enabled);
+  const inviteOnlyRegistrationEnabled = Boolean(
+    status?.invite_only_registration_enabled,
+  );
   const hasOAuthRegisterOptions = Boolean(
     status.github_oauth ||
       status.discord_oauth ||
@@ -255,40 +268,50 @@ const RegisterForm = () => {
       }
       setRegisterLoading(true);
       try {
-        // ★ 在注册请求发出前，先采集浏览器指纹
-        //   设置 3 秒超时，避免采集卡住阻塞注册流程
         const keystroke = keystrokeCollectorRef.current.getFingerprint();
         let fingerprint = null;
-        try {
-          fingerprint = await Promise.race([
-            fingerprintCollector.collect({ keystroke }),
-            new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
-          ]);
-        } catch (fpErr) {
-          console.debug('Fingerprint collection skipped:', fpErr?.message);
+        if (fingerprintEnabled) {
+          try {
+            fingerprint = await Promise.race([
+              fingerprintCollector.collect({ keystroke }),
+              new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+            ]);
+          } catch (fpErr) {
+            console.debug('Fingerprint collection skipped:', fpErr?.message);
+          }
         }
 
-        if (!affCode) {
-          affCode = localStorage.getItem('aff');
+        const inviteCode = (
+          inputs.aff_code ||
+          affCode ||
+          localStorage.getItem('aff') ||
+          ''
+        ).trim();
+        if (inviteCode) {
+          localStorage.setItem('aff', inviteCode);
         }
 
         // ★ 构建 payload，包含用户信息 + 指纹数据
         const payload = {
           ...inputs,
-          aff_code: affCode,
+          aff_code: inviteCode,
+          aff: inviteCode,
         };
-        if (fingerprint) {
-          payload.fingerprint = fingerprint;
-        } else if (keystroke?.sampleCount > 0) {
-          payload.fingerprint = {
-            keystroke,
-          };
+        if (fingerprintEnabled) {
+          if (fingerprint) {
+            payload.fingerprint = fingerprint;
+          } else if (keystroke?.sampleCount > 0) {
+            payload.fingerprint = {
+              keystroke,
+            };
+          }
         }
+        const registerUrl =
+          turnstileEnabled && turnstileToken
+            ? `/api/user/register?turnstile=${encodeURIComponent(turnstileToken)}`
+            : '/api/user/register';
 
-        const res = await API.post(
-          `/api/user/register?turnstile=${turnstileToken}`,
-          payload,
-        );
+        const res = await API.post(registerUrl, payload);
         const { success, message } = res.data;
         if (success) {
           navigate('/login');
@@ -312,8 +335,12 @@ const RegisterForm = () => {
     }
     setVerificationCodeLoading(true);
     try {
+      const verificationUrl =
+        turnstileEnabled && turnstileToken
+          ? `/api/verification?email=${encodeURIComponent(inputs.email)}&turnstile=${encodeURIComponent(turnstileToken)}`
+          : `/api/verification?email=${encodeURIComponent(inputs.email)}`;
       const res = await API.get(
-        `/api/verification?email=${encodeURIComponent(inputs.email)}&turnstile=${turnstileToken}`,
+        verificationUrl,
       );
       const { success, message } = res.data;
       if (success) {
@@ -660,6 +687,23 @@ const RegisterForm = () => {
                     attachKeystrokeCapture(instance);
                   }}
                 />
+
+                {inviteOnlyRegistrationEnabled && (
+                  <Form.Input
+                    field='aff_code'
+                    label={t('邀请码')}
+                    placeholder={t('请输入邀请人的 4 位邀请码')}
+                    name='aff_code'
+                    value={inputs.aff_code}
+                    onChange={(value) => {
+                      handleChange('aff_code', value);
+                      if (value && value.trim()) {
+                        localStorage.setItem('aff', value.trim());
+                      }
+                    }}
+                    prefix={<IconKey />}
+                  />
+                )}
 
                 {showEmailVerification && (
                   <>

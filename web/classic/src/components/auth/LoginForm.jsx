@@ -260,8 +260,12 @@ const LoginForm = () => {
     setLoginLoading(true);
     try {
       if (username && password) {
+        const loginUrl =
+          turnstileEnabled && turnstileToken
+            ? `/api/user/login?turnstile=${encodeURIComponent(turnstileToken)}`
+            : '/api/user/login';
         const res = await API.post(
-          `/api/user/login?turnstile=${turnstileToken}`,
+          loginUrl,
           {
             username,
             password,

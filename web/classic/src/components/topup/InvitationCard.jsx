@@ -39,6 +39,8 @@ const InvitationCard = ({
   affLink,
   handleAffLinkClick,
 }) => {
+  const ownInviteCode =
+    userState?.user?.aff_code || localStorage.getItem('aff') || '';
   return (
     <Card className='!rounded-2xl shadow-sm border-0'>
       {/* 卡片头部 */}
@@ -173,7 +175,23 @@ const InvitationCard = ({
             </div>
           }
         >
-          {/* 邀请链接部分 */}
+          <Input
+            value={ownInviteCode}
+            readonly
+            className='!rounded-lg mb-2'
+            prefix={t('邀请码')}
+            suffix={
+              <Button
+                type='tertiary'
+                theme='light'
+                onClick={() => handleAffLinkClick(ownInviteCode, true)}
+                icon={<Copy size={14} />}
+                className='!rounded-lg'
+              >
+                {t('复制')}
+              </Button>
+            }
+          />
           <Input
             value={affLink}
             readonly
@@ -183,7 +201,7 @@ const InvitationCard = ({
               <Button
                 type='primary'
                 theme='solid'
-                onClick={handleAffLinkClick}
+                onClick={() => handleAffLinkClick(affLink, false)}
                 icon={<Copy size={14} />}
                 className='!rounded-lg'
               >

@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"gorm.io/gorm"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	"gorm.io/gorm"
 )
 
 type Option struct {
@@ -44,6 +44,7 @@ func InitOptionMap() {
 	common.OptionMap["PasswordLoginEnabled"] = strconv.FormatBool(common.PasswordLoginEnabled)
 	common.OptionMap["PasswordRegisterEnabled"] = strconv.FormatBool(common.PasswordRegisterEnabled)
 	common.OptionMap["EmailVerificationEnabled"] = strconv.FormatBool(common.EmailVerificationEnabled)
+	common.OptionMap["InviteOnlyRegistrationEnabled"] = strconv.FormatBool(common.InviteOnlyRegistrationEnabled)
 	common.OptionMap["GitHubOAuthEnabled"] = strconv.FormatBool(common.GitHubOAuthEnabled)
 	common.OptionMap["LinuxDOOAuthEnabled"] = strconv.FormatBool(common.LinuxDOOAuthEnabled)
 	common.OptionMap["TelegramOAuthEnabled"] = strconv.FormatBool(common.TelegramOAuthEnabled)
@@ -277,6 +278,8 @@ func updateOptionMap(key string, value string) (err error) {
 			common.PasswordLoginEnabled = boolValue
 		case "EmailVerificationEnabled":
 			common.EmailVerificationEnabled = boolValue
+		case "InviteOnlyRegistrationEnabled":
+			common.InviteOnlyRegistrationEnabled = boolValue
 		case "GitHubOAuthEnabled":
 			common.GitHubOAuthEnabled = boolValue
 		case "LinuxDOOAuthEnabled":

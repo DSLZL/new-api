@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -56,7 +57,7 @@ func (p *OIDCProvider) ExchangeToken(ctx context.Context, code string, c *gin.Co
 	logger.LogDebug(ctx, "[OAuth-OIDC] ExchangeToken: code=%s...", code[:min(len(code), 10)])
 
 	settings := system_setting.GetOIDCSettings()
-	redirectUri := fmt.Sprintf("%s/oauth/oidc", system_setting.ServerAddress)
+	redirectUri := buildOAuthRedirectURI(c, "/oauth/oidc")
 	values := url.Values{}
 	values.Set("client_id", settings.ClientId)
 	values.Set("client_secret", settings.ClientSecret)
@@ -85,15 +86,25 @@ func (p *OIDCProvider) ExchangeToken(ctx context.Context, code string, c *gin.Co
 
 	logger.LogDebug(ctx, "[OAuth-OIDC] ExchangeToken response status: %d", res.StatusCode)
 
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-OIDC] ExchangeToken read body error: %s", err.Error()))
+		return nil, err
+	}
+
 	var oidcResponse oidcOAuthResponse
-	err = json.NewDecoder(res.Body).Decode(&oidcResponse)
+	err = json.Unmarshal(body, &oidcResponse)
 	if err != nil {
 		logger.LogError(ctx, fmt.Sprintf("[OAuth-OIDC] ExchangeToken decode error: %s", err.Error()))
 		return nil, err
 	}
 
 	if oidcResponse.AccessToken == "" {
-		logger.LogError(ctx, "[OAuth-OIDC] ExchangeToken failed: empty access token")
+		bodyPreview := strings.TrimSpace(string(body))
+		if len(bodyPreview) > 512 {
+			bodyPreview = bodyPreview[:512]
+		}
+		logger.LogError(ctx, fmt.Sprintf("[OAuth-OIDC] ExchangeToken failed: empty access token, status=%d, body=%s", res.StatusCode, bodyPreview))
 		return nil, NewOAuthError(i18n.MsgOAuthTokenFailed, map[string]any{"Provider": "OIDC"})
 	}
 
