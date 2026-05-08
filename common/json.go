@@ -18,6 +18,22 @@ func DecodeJson(reader io.Reader, v any) error {
 	return json.NewDecoder(reader).Decode(v)
 }
 
+func DecodeJsonStrict(reader io.Reader, v any) error {
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return io.ErrUnexpectedEOF
+		}
+		return err
+	}
+	return nil
+}
+
 func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
@@ -42,4 +58,20 @@ func GetJsonType(data json.RawMessage) string {
 	default:
 		return "number"
 	}
+}
+
+// JsonRawMessageToString returns JSON strings as their decoded value and other JSON values as raw text.
+func JsonRawMessageToString(data json.RawMessage) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	if trimmed[0] != '"' {
+		return string(trimmed)
+	}
+	var value string
+	if err := Unmarshal(trimmed, &value); err != nil {
+		return string(trimmed)
+	}
+	return value
 }

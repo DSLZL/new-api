@@ -33,6 +33,25 @@ func validUserInfo(username string, role int) bool {
 	return true
 }
 
+const (
+	authErrCodeNotLoggedIn       = "AUTH_NOT_LOGGED_IN"
+	authErrCodeUserIDNotProvided = "AUTH_USER_ID_NOT_PROVIDED"
+	authErrCodeUserIDFormatError = "AUTH_USER_ID_FORMAT_ERROR"
+	authErrCodeUserIDMismatch    = "AUTH_USER_ID_MISMATCH"
+)
+
+func abortUnauthorizedWithCode(c *gin.Context, message string, code string) {
+	body := gin.H{
+		"success": false,
+		"message": message,
+	}
+	if code != "" {
+		body["code"] = code
+	}
+	c.JSON(http.StatusUnauthorized, body)
+	c.Abort()
+}
+
 func authHelper(c *gin.Context, minRole int) {
 	session := sessions.Default(c)
 	username := session.Get("username")
@@ -44,11 +63,7 @@ func authHelper(c *gin.Context, minRole int) {
 		// Check access token
 		accessToken := c.Request.Header.Get("Authorization")
 		if accessToken == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": common.TranslateMessage(c, i18n.MsgAuthNotLoggedIn),
-			})
-			c.Abort()
+			abortUnauthorizedWithCode(c, common.TranslateMessage(c, i18n.MsgAuthNotLoggedIn), authErrCodeNotLoggedIn)
 			return
 		}
 		user, authErr := model.ValidateAccessToken(accessToken)
@@ -95,29 +110,17 @@ func authHelper(c *gin.Context, minRole int) {
 	// get header New-Api-User
 	apiUserIdStr := c.Request.Header.Get("New-Api-User")
 	if apiUserIdStr == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": common.TranslateMessage(c, i18n.MsgAuthUserIdNotProvided),
-		})
-		c.Abort()
+		abortUnauthorizedWithCode(c, common.TranslateMessage(c, i18n.MsgAuthUserIdNotProvided), authErrCodeUserIDNotProvided)
 		return
 	}
 	apiUserId, err := strconv.Atoi(apiUserIdStr)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": common.TranslateMessage(c, i18n.MsgAuthUserIdFormatError),
-		})
-		c.Abort()
+		abortUnauthorizedWithCode(c, common.TranslateMessage(c, i18n.MsgAuthUserIdFormatError), authErrCodeUserIDFormatError)
 		return
 
 	}
 	if id != apiUserId {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"message": common.TranslateMessage(c, i18n.MsgAuthUserIdMismatch),
-		})
-		c.Abort()
+		abortUnauthorizedWithCode(c, common.TranslateMessage(c, i18n.MsgAuthUserIdMismatch), authErrCodeUserIDMismatch)
 		return
 	}
 	if status.(int) == common.UserStatusDisabled {

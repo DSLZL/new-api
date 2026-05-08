@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 
@@ -31,12 +32,20 @@ func SetApiRouter(router *gin.Engine) {
 		//apiRouter.GET("/midjourney", controller.GetMidjourney)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.TryUserAuth(), controller.GetPricing)
+		perfMetricsRoute := apiRouter.Group("/perf-metrics")
+		perfMetricsRoute.Use(middleware.TryUserAuth())
+		{
+			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
+			perfMetricsRoute.GET("", controller.GetPerfMetrics)
+		}
+		apiRouter.GET("/rankings", controller.GetRankings)
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), controller.ResetPassword)
 		// OAuth routes - specific routes must come before :provider wildcard
 		apiRouter.GET("/oauth/state", middleware.CriticalRateLimit(), controller.GenerateOAuthCode)
 		apiRouter.POST("/oauth/email/bind", middleware.CriticalRateLimit(), controller.EmailBind)
+		apiRouter.POST("/oauth/invite/continue", middleware.CriticalRateLimit(), controller.ContinueOAuthWithInvite)
 		// Non-standard OAuth (WeChat, Telegram) - keep original routes
 		apiRouter.GET("/oauth/wechat", middleware.CriticalRateLimit(), controller.WeChatAuth)
 		apiRouter.POST("/oauth/wechat/bind", middleware.CriticalRateLimit(), controller.WeChatBind)
@@ -49,6 +58,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/stripe/webhook", controller.StripeWebhook)
 		apiRouter.POST("/creem/webhook", controller.CreemWebhook)
 		apiRouter.POST("/waffo/webhook", controller.WaffoWebhook)
+		//apiRouter.POST("/waffo-pancake/webhook", controller.WaffoPancakeWebhook)
 
 		// Universal secure verification routes
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), controller.UniversalVerify)
@@ -90,7 +100,10 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.RequestStripePay)
 				selfRoute.POST("/stripe/amount", controller.RequestStripeAmount)
 				selfRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.RequestCreemPay)
+				selfRoute.POST("/waffo/amount", controller.RequestWaffoAmount)
 				selfRoute.POST("/waffo/pay", middleware.CriticalRateLimit(), controller.RequestWaffoPay)
+				//selfRoute.POST("/waffo-pancake/amount", controller.RequestWaffoPancakeAmount)
+				//selfRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.RequestWaffoPancakePay)
 				selfRoute.POST("/aff_transfer", controller.TransferAffQuota)
 				selfRoute.PUT("/setting", controller.UpdateUserSetting)
 
@@ -375,5 +388,61 @@ func SetApiRouter(router *gin.Engine) {
 			deploymentsRoute.POST("/:id/extend", controller.ExtendDeployment)
 			deploymentsRoute.DELETE("/:id", controller.DeleteDeployment)
 		}
+
+		// ★ 指纹系统路由
+		SetFingerprintRoutes(apiRouter)
+	}
+}
+
+// SetFingerprintRoutes 注册指纹系统路由
+func SetFingerprintRoutes(apiRouter *gin.RouterGroup) {
+	if !common.FingerprintEnabled {
+		return
+	}
+
+	// ETag 追踪脚本路由（未登录可访问；登录态可关联用户）
+	apiRouter.GET("/static/fp.js", middleware.FingerprintStaticRateLimit(), middleware.TryUserAuth(), controller.ETagTracker)
+
+	// 指纹上报 — 已登录用户
+	fpAPI := apiRouter.Group("/fingerprint")
+	fpAPI.Use(middleware.UserAuth())
+	fpAPI.Use(middleware.FingerprintReportRateLimit())
+	{
+		fpAPI.POST("/report", controller.ReportFingerprint)
+		fpAPI.POST("/behavior", controller.ReportBehaviorFingerprint)
+	}
+
+	// 权限查询 — 已登录用户
+	apiRouter.GET("/fingerprint/access", middleware.UserAuth(), controller.GetFingerprintAccess)
+
+	// 管理接口 — 受 FingerprintAdminAuth 保护
+	fpAdmin := apiRouter.Group("/admin/fingerprint")
+	fpAdmin.Use(middleware.AdminAuth())
+	fpAdmin.Use(middleware.FingerprintAdminAuth())
+	{
+		fpAdmin.GET("/dashboard", controller.FPDashboard)
+		fpAdmin.GET("/links", controller.FPGetLinks)
+		fpAdmin.GET("/links/:id", controller.FPGetLinkDetail)
+		fpAdmin.POST("/links/:id/review", controller.FPReviewLink)
+		fpAdmin.GET("/weights", controller.FPGetWeights)
+		fpAdmin.PUT("/weights", controller.FPUpdateWeights)
+
+		// ★ 关联度查询
+		fpAdmin.GET("/user/:id/associations", controller.FPGetUserAssociations)
+
+		fpAdmin.GET("/user/:id/fingerprints", controller.FPGetUserFingerprints)
+		fpAdmin.GET("/user/:id/devices", controller.FPGetUserDevices)
+		fpAdmin.GET("/user/:id/risk", controller.FPGetUserRisk)
+		fpAdmin.GET("/user/:id/ip-history", controller.FPGetUserIPHistory)
+		fpAdmin.GET("/user/:id/network", controller.FPGetUserNetworkProfile)
+		fpAdmin.GET("/user/:id/temporal", controller.FPGetUserTemporalProfile)
+
+		fpAdmin.POST("/compare", controller.FPCompareUsers)
+
+		// 仅超级管理员
+		fpAdmin.POST("/account-links/repair", middleware.SuperAdminOnly(), controller.FPRepairAccountLinks)
+		fpAdmin.POST("/scan", middleware.SuperAdminOnly(), controller.FPTriggerFullScan)
+
+		fpAdmin.POST("/user/:id/reset-test-data", middleware.SuperAdminOnly(), controller.FPResetUserFingerprintTestData)
 	}
 }

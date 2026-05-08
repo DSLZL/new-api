@@ -125,8 +125,7 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 	defer response.Body.Close()
 
 	if response.StatusCode != 200 {
-		err = errors.New(fmt.Sprintf("fail to get image from url: %s", response.Status))
-		return image.Config{}, "", err
+		return image.Config{}, "", fmt.Errorf("fail to get image from url: %s", response.Status)
 	}
 
 	mimeType := response.Header.Get("Content-Type")
@@ -141,17 +140,20 @@ func DecodeUrlImageData(imageUrl string) (image.Config, string, error) {
 
 		// 从response.Body读取更多的数据直到达到当前的限制
 		additionalData := make([]byte, limit-int64(len(readData)))
-		n, _ := io.ReadFull(response.Body, additionalData)
+		n, readErr := io.ReadFull(response.Body, additionalData)
 		readData = append(readData, additionalData[:n]...)
-
-		// 使用io.MultiReader组合已经读取的数据和response.Body
-		limitReader := io.MultiReader(bytes.NewReader(readData), response.Body)
 
 		var config image.Config
 		var format string
-		config, format, err = getImageConfig(limitReader)
+		config, format, err = getImageConfig(bytes.NewReader(readData))
 		if err == nil {
 			return config, format, nil
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				break
+			}
+			return image.Config{}, "", fmt.Errorf("failed to read image data: %w", readErr)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
@@ -27,6 +29,21 @@ import (
 type LoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+const (
+	InviteCodeInvalidCode  = "INVITE_CODE_INVALID"
+	InviteCodeRequiredCode = "INVITE_CODE_REQUIRED"
+)
+
+func apiInviteError(c *gin.Context, code string, message string) {
+	c.JSON(http.StatusOK, gin.H{
+		"success": false,
+		"message": message,
+		"data": gin.H{
+			"code": code,
+		},
+	})
 }
 
 func Login(c *gin.Context) {
@@ -65,7 +82,13 @@ func Login(c *gin.Context) {
 	}
 
 	// 检查是否启用2FA
-	if model.IsTwoFAEnabled(user.Id) {
+	twoFAEnabled, twoFAErr := model.IsTwoFAEnabledSafe(user.Id)
+	if twoFAErr != nil {
+		common.SysLog(fmt.Sprintf("Login 2FA state check failed for user %s(id=%d): %v", username, user.Id, twoFAErr))
+		common.ApiErrorI18n(c, i18n.MsgDatabaseError)
+		return
+	}
+	if twoFAEnabled {
 		// 设置pending session，等待2FA验证
 		session := sessions.Default(c)
 		session.Set("pending_username", user.Username)
@@ -79,7 +102,7 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": i18n.T(c, i18n.MsgUserRequire2FA),
 			"success": true,
-			"data": map[string]interface{}{
+			"data": map[string]any{
 				"require_2fa": true,
 			},
 		})
@@ -91,6 +114,7 @@ func Login(c *gin.Context) {
 
 // setup session & cookies and then return user info
 func setupLogin(user *model.User, c *gin.Context) {
+	model.UpdateUserLastLoginAt(user.Id)
 	session := sessions.Default(c)
 	session.Set("id", user.Id)
 	session.Set("username", user.Username)
@@ -133,6 +157,54 @@ func Logout(c *gin.Context) {
 	})
 }
 
+// ─── 注册时客户端指纹数据结构 ───
+type ClientFingerprintData struct {
+	CanvasHash            string                       `json:"canvas_hash"`
+	WebGLHash             string                       `json:"webgl_hash"`
+	WebGLDeepHash         string                       `json:"webgl_deep_hash"`
+	ClientRectsHash       string                       `json:"client_rects_hash"`
+	WebGLVendor           string                       `json:"webgl_vendor"`
+	WebGLRenderer         string                       `json:"webgl_renderer"`
+	MediaDevicesHash      string                       `json:"media_devices_hash"`
+	MediaDeviceCount      string                       `json:"media_device_count"`
+	MediaDeviceGroupHash  string                       `json:"media_device_group_hash"`
+	MediaDeviceTotal      int                          `json:"media_device_total"`
+	SpeechVoicesHash      string                       `json:"speech_voices_hash"`
+	SpeechVoiceCount      int                          `json:"speech_voice_count"`
+	SpeechLocalVoiceCount int                          `json:"speech_local_voice_count"`
+	AudioHash             string                       `json:"audio_hash"`
+	FontsHash             string                       `json:"fonts_hash"`
+	FontsList             string                       `json:"fonts_list"`
+	ScreenWidth           int                          `json:"screen_width"`
+	ScreenHeight          int                          `json:"screen_height"`
+	ColorDepth            int                          `json:"color_depth"`
+	PixelRatio            float32                      `json:"pixel_ratio"`
+	CPUCores              int                          `json:"cpu_cores"`
+	DeviceMemory          float32                      `json:"device_memory"`
+	MaxTouch              int                          `json:"max_touch"`
+	Timezone              string                       `json:"timezone"`
+	TZOffset              int                          `json:"tz_offset"`
+	Languages             string                       `json:"languages"`
+	Platform              string                       `json:"platform"`
+	DoNotTrack            string                       `json:"do_not_track"`
+	CookieEnabled         bool                         `json:"cookie_enabled"`
+	LocalDeviceID         string                       `json:"local_device_id"`
+	PersistentID          string                       `json:"persistent_id"`
+	PersistentIDSource    string                       `json:"id_source"`
+	ETagID                string                       `json:"etag_id"`
+	WebRTCLocalIPs        []string                     `json:"webrtc_local_ips"`
+	WebRTCPublicIPs       []string                     `json:"webrtc_public_ips"`
+	CompositeHash         string                       `json:"composite_hash"`
+	DNSResolverIP         string                       `json:"dns_resolver_ip"`
+	DNSProbeID            string                       `json:"dns_probe_id"`
+	SessionID             string                       `json:"session_id"`
+	SessionStartAt        int64                        `json:"session_start_at"`
+	SessionEndAt          int64                        `json:"session_end_at"`
+	HTTPHeaderHash        string                       `json:"http_header_hash"`
+	Keystroke             *KeystrokeFingerprintRequest `json:"keystroke,omitempty"`
+	Mouse                 *MouseFingerprintRequest     `json:"mouse,omitempty"`
+}
+
 func Register(c *gin.Context) {
 	if !common.RegisterEnabled {
 		common.ApiErrorI18n(c, i18n.MsgUserRegisterDisabled)
@@ -142,12 +214,56 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordRegisterDisabled)
 		return
 	}
-	var user model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
+
+	// ★ 读取完整请求体，以便分别解析 user 字段和 fingerprint 字段
+	const registerRequestBodyLimit = 1 << 20 // 1 MiB
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, registerRequestBodyLimit)
+	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
+
+	var user model.User
+	if err := common.Unmarshal(bodyBytes, &user); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+
+	// ★ 提取客户端指纹。fingerprint 字段本身仍是可选的，但一旦提供就必须通过严格校验。
+	var fpWrapper struct {
+		Fingerprint json.RawMessage `json:"fingerprint"`
+	}
+	if err := common.Unmarshal(bodyBytes, &fpWrapper); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	behaviorEnabled := common.FingerprintEnableBehaviorAnalysis
+	var clientFingerprint *ClientFingerprintData
+	if len(fpWrapper.Fingerprint) > 0 && string(fpWrapper.Fingerprint) != "null" {
+		var parsedFingerprint ClientFingerprintData
+		if err := common.DecodeJsonStrict(strings.NewReader(string(fpWrapper.Fingerprint)), &parsedFingerprint); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		if behaviorEnabled {
+			if err := ValidateKeystrokeFingerprintRequest(parsedFingerprint.Keystroke); err != nil {
+				common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+				return
+			}
+			if err := ValidateMouseFingerprintRequest(parsedFingerprint.Mouse); err != nil {
+				common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+				return
+			}
+		}
+		clientFingerprint = &parsedFingerprint
+	}
+
 	if err := common.Validate.Struct(&user); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
@@ -172,8 +288,26 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
-	affCode := user.AffCode // this code is the inviter's code, not the user's own code
-	inviterId, _ := model.GetUserIdByAffCode(affCode)
+	affCode := model.NormalizeAffCode(user.AffCode) // this code is the inviter's code, not the user's own code
+	inviterId := 0
+	if common.InviteOnlyRegistrationEnabled {
+		resolvedInviterId, resolveErr := model.ResolveInviterIDFromAffCode(affCode)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, model.ErrInviteCodeRequired) {
+				apiInviteError(c, InviteCodeRequiredCode, i18n.T(c, i18n.MsgUserAffCodeEmpty))
+				return
+			}
+			if errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
+				apiInviteError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
+				return
+			}
+			common.ApiError(c, resolveErr)
+			return
+		}
+		inviterId = resolvedInviterId
+	} else if affCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(affCode)
+	}
 	cleanUser := model.User{
 		Username:    user.Username,
 		Password:    user.Password,
@@ -222,6 +356,95 @@ func Register(c *gin.Context) {
 			common.ApiErrorI18n(c, i18n.MsgCreateDefaultTokenErr)
 			return
 		}
+	}
+
+	// ★ 注册时采集指纹：合并服务端 IP/UA 与客户端浏览器指纹
+	if common.FingerprintEnabled {
+		realIP := c.GetString("real_ip")
+		if realIP == "" {
+			realIP = middleware.ExtractRealIP(c)
+		}
+		userAgent := c.GetHeader("User-Agent")
+		ja4 := c.GetString("ja4_fingerprint")
+		httpHeaderFP := c.GetString("http_header_fingerprint")
+		uid := insertedUser.Id
+		clientFP := clientFingerprint
+
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// 静默处理 panic
+				}
+			}()
+
+			parsedUA := common.ParseUserAgent(userAgent)
+			ipInfo := service.LookupIP(realIP)
+
+			// 1. 记录 IP/UA 历史（用于 IP 重叠度计算）
+			ipRecord := &model.IPUAHistory{
+				UserID:       uid,
+				IPAddress:    realIP,
+				UserAgent:    userAgent,
+				IPCountry:    ipInfo.Country,
+				IPRegion:     ipInfo.Region,
+				IPCity:       ipInfo.City,
+				IPISP:        ipInfo.ISP,
+				IPType:       ipInfo.Type,
+				ASN:          ipInfo.ASN,
+				ASNOrg:       ipInfo.ASNOrg,
+				IsDatacenter: ipInfo.IsDatacenter,
+				IPRiskScore:  float32(ipInfo.Risk),
+				UABrowser:    parsedUA.Browser,
+				UABrowserVer: parsedUA.BrowserVer,
+				UAOS:         parsedUA.OS,
+				UAOSVer:      parsedUA.OSVer,
+				UADevice:     parsedUA.DeviceType,
+				Endpoint:     "/api/user/register",
+			}
+			_ = model.UpsertIPUAHistory(ipRecord)
+
+			// 2. 构建完整指纹记录（服务端采集 + 客户端采集）
+			fp := &model.Fingerprint{
+				UserID:         uid,
+				IPAddress:      realIP,
+				IPCountry:      ipInfo.Country,
+				IPRegion:       ipInfo.Region,
+				IPCity:         ipInfo.City,
+				IPISP:          ipInfo.ISP,
+				IPType:         ipInfo.Type,
+				ASN:            ipInfo.ASN,
+				ASNOrg:         ipInfo.ASNOrg,
+				IsDatacenter:   ipInfo.IsDatacenter,
+				UserAgent:      userAgent,
+				UABrowser:      parsedUA.Browser,
+				UABrowserVer:   parsedUA.BrowserVer,
+				UAOS:           parsedUA.OS,
+				UAOSVer:        parsedUA.OSVer,
+				JA4:            ja4,
+				HTTPHeaderHash: httpHeaderFP,
+				UADeviceType:   parsedUA.DeviceType,
+			}
+
+			// ★ 合并客户端浏览器指纹（注册按钮点击时前端采集并随请求发送）
+			applyClientFingerprintData(fp, clientFP)
+
+			applyFingerprintFeatureSwitches(fp)
+			_ = fp.Insert()
+
+			profile := buildUserDeviceProfileFromFingerprint(uid, realIP, parsedUA, fp)
+			if profile != nil {
+				_ = model.UpsertDeviceProfile(profile)
+			}
+
+			if behaviorEnabled && clientFP != nil {
+				if err := upsertBehaviorProfiles(uid, clientFP.Keystroke, clientFP.Mouse); err != nil {
+					common.SysLog(fmt.Sprintf("register behavior profile upsert failed: %v", err))
+				}
+			}
+
+			// 3. 触发关联分析
+			service.AnalyzeAccountLinks(uid, fp)
+		}()
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -891,6 +1114,11 @@ func ManageUser(c *gin.Context) {
 			})
 			return
 		}
+		// 删除用户后，强制清理 Redis 中所有该用户令牌的缓存，
+		// 避免已缓存的令牌在 TTL 过期前仍能通过 TokenAuth 校验。
+		if err := model.InvalidateUserTokensCache(user.Id); err != nil {
+			common.SysLog(fmt.Sprintf("failed to invalidate tokens cache for user %d: %s", user.Id, err.Error()))
+		}
 	case "promote":
 		if myRole != common.RoleRootUser {
 			common.ApiErrorI18n(c, i18n.MsgUserAdminCannotPromote)
@@ -913,6 +1141,11 @@ func ManageUser(c *gin.Context) {
 		user.Role = common.RoleCommonUser
 	case "add_quota":
 		adminName := c.GetString("username")
+		adminId := c.GetInt("id")
+		adminInfo := map[string]interface{}{
+			"admin_id":       adminId,
+			"admin_username": adminName,
+		}
 		switch req.Mode {
 		case "add":
 			if req.Value <= 0 {
@@ -923,8 +1156,8 @@ func ManageUser(c *gin.Context) {
 				common.ApiError(c, err)
 				return
 			}
-			model.RecordLog(user.Id, model.LogTypeManage,
-				fmt.Sprintf("管理员(%s)增加用户额度 %s", adminName, logger.LogQuota(req.Value)))
+			model.RecordLogWithAdminInfo(user.Id, model.LogTypeManage,
+				fmt.Sprintf("管理员增加用户额度 %s", logger.LogQuota(req.Value)), adminInfo)
 		case "subtract":
 			if req.Value <= 0 {
 				common.ApiErrorI18n(c, i18n.MsgUserQuotaChangeZero)
@@ -934,16 +1167,16 @@ func ManageUser(c *gin.Context) {
 				common.ApiError(c, err)
 				return
 			}
-			model.RecordLog(user.Id, model.LogTypeManage,
-				fmt.Sprintf("管理员(%s)减少用户额度 %s", adminName, logger.LogQuota(req.Value)))
+			model.RecordLogWithAdminInfo(user.Id, model.LogTypeManage,
+				fmt.Sprintf("管理员减少用户额度 %s", logger.LogQuota(req.Value)), adminInfo)
 		case "override":
 			oldQuota := user.Quota
 			if err := model.DB.Model(&model.User{}).Where("id = ?", user.Id).Update("quota", req.Value).Error; err != nil {
 				common.ApiError(c, err)
 				return
 			}
-			model.RecordLog(user.Id, model.LogTypeManage,
-				fmt.Sprintf("管理员(%s)覆盖用户额度从 %s 为 %s", adminName, logger.LogQuota(oldQuota), logger.LogQuota(req.Value)))
+			model.RecordLogWithAdminInfo(user.Id, model.LogTypeManage,
+				fmt.Sprintf("管理员覆盖用户额度从 %s 为 %s", logger.LogQuota(oldQuota), logger.LogQuota(req.Value)), adminInfo)
 		default:
 			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 			return
@@ -958,6 +1191,18 @@ func ManageUser(c *gin.Context) {
 	if err := user.Update(false); err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	// 禁用 / 角色调整后，强制失效用户缓存与其全部令牌缓存，
+	// 避免在 Redis TTL 过期前仍使用旧状态（尤其是禁用后仍可发起请求的问题）。
+	// InvalidateUserCache 会让下一次 GetUserCache 从数据库重新加载，
+	// InvalidateUserTokensCache 则确保令牌侧的缓存也同步刷新。
+	if req.Action == "disable" || req.Action == "promote" || req.Action == "demote" {
+		if err := model.InvalidateUserCache(user.Id); err != nil {
+			common.SysLog(fmt.Sprintf("failed to invalidate user cache for user %d: %s", user.Id, err.Error()))
+		}
+		if err := model.InvalidateUserTokensCache(user.Id); err != nil {
+			common.SysLog(fmt.Sprintf("failed to invalidate tokens cache for user %d: %s", user.Id, err.Error()))
+		}
 	}
 	clearUser := model.User{
 		Role:   user.Role,
