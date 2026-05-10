@@ -118,3 +118,34 @@ export type RankingsSnapshot = {
   /** 100%-stacked area history of token share by vendor over the period. */
   vendor_share_history: VendorShareSeries
 }
+
+export type UserRankingMetric = 'balance' | 'invites' | 'consumption'
+
+export type UserRankingPeriod = 'daily' | 'total'
+
+export type UserRankingVisibility = 'public' | 'auth-only'
+
+export type UserRankingItem = {
+  rank: number
+  user_id: number
+  username: string
+  display_name: string
+  value: number
+}
+
+export type UserRankingsSnapshot = {
+  scope: 'users'
+  metric: UserRankingMetric
+  period: UserRankingPeriod
+  date?: string
+  visibility: UserRankingVisibility
+  updated_at: number
+  items: UserRankingItem[]
+}
+
+export type UserRankingSelfStat = {
+  metric: UserRankingMetric
+  period: UserRankingPeriod
+  value: number | null
+  rank: number | null
+}

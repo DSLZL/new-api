@@ -49,6 +49,7 @@ import Chat from './pages/Chat';
 import Chat2Link from './pages/Chat2Link';
 import Midjourney from './pages/Midjourney';
 import Pricing from './pages/Pricing';
+import Rankings from './pages/Rankings';
 import Task from './pages/Task';
 import ModelPage from './pages/Model';
 import ModelDeploymentPage from './pages/ModelDeployment';
@@ -167,6 +168,25 @@ function App() {
       }
     }
     return false; // 默认不需要登录
+  }, [statusState?.status?.HeaderNavModules]);
+
+  const rankingsRequireAuth = useMemo(() => {
+    const headerNavModulesConfig = statusState?.status?.HeaderNavModules;
+    if (headerNavModulesConfig) {
+      try {
+        const modules = JSON.parse(headerNavModulesConfig);
+
+        if (typeof modules.rankings === 'boolean') {
+          return false;
+        }
+
+        return modules.rankings?.requireAuth === true;
+      } catch (error) {
+        console.error('解析顶栏模块配置失败:', error);
+        return false;
+      }
+    }
+    return false;
   }, [statusState?.status?.HeaderNavModules]);
 
   return (
@@ -432,6 +452,25 @@ function App() {
             ) : (
               <Suspense fallback={<Loading></Loading>} key={location.pathname}>
                 <Pricing />
+              </Suspense>
+            )
+          }
+        />
+        <Route
+          path='/rankings'
+          element={
+            rankingsRequireAuth ? (
+              <PrivateRoute>
+                <Suspense
+                  fallback={<Loading></Loading>}
+                  key={location.pathname}
+                >
+                  <Rankings />
+                </Suspense>
+              </PrivateRoute>
+            ) : (
+              <Suspense fallback={<Loading></Loading>} key={location.pathname}>
+                <Rankings />
               </Suspense>
             )
           }

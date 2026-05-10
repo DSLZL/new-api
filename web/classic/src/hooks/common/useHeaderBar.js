@@ -68,6 +68,18 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
             requireAuth: false, // 默认不需要登录鉴权
           };
         }
+        if (typeof modules.rankings === 'boolean') {
+          modules.rankings = {
+            enabled: modules.rankings,
+            requireAuth: false,
+          };
+        }
+        if (!modules.rankings) {
+          modules.rankings = {
+            enabled: true,
+            requireAuth: false,
+          };
+        }
 
         return modules;
       } catch (error) {
@@ -86,6 +98,15 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
         : false; // 默认不需要登录
     }
     return false; // 默认不需要登录
+  }, [headerNavModules]);
+
+  const rankingsRequireAuth = useMemo(() => {
+    if (headerNavModules?.rankings) {
+      return typeof headerNavModules.rankings === 'object'
+        ? headerNavModules.rankings.requireAuth
+        : false;
+    }
+    return false;
   }, [headerNavModules]);
 
   const isConsoleRoute = location.pathname.startsWith('/console');
@@ -238,6 +259,7 @@ export const useHeaderBar = ({ onMobileMenuToggle, drawerOpen }) => {
     drawerOpen,
     headerNavModules,
     pricingRequireAuth,
+    rankingsRequireAuth,
 
     // Actions
     logout,

@@ -40,6 +40,7 @@ export type SiteSettings = {
   'legal.privacy_policy': string
   HeaderNavModules: string
   SidebarModulesAdmin: string
+  'ranking_setting.user_visibility': string
 }
 
 export type AuthSettings = {

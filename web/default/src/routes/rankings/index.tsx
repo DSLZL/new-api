@@ -3,10 +3,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Rankings } from '@/features/rankings'
 
 const rankingsSearchSchema = z.object({
-  period: z
-    .enum(['today', 'week', 'month', 'year', 'all'])
+  metric: z
+    .enum(['balance', 'invites', 'consumption'])
     .optional()
     .catch(undefined),
+  period: z.enum(['daily', 'total']).optional().catch(undefined),
 })
 
 export const Route = createFileRoute('/rankings/')({

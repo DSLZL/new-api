@@ -120,6 +120,9 @@ func main() {
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
+	// User rankings daily snapshot task (network Beijing time daily baseline)
+	service.StartUserRankingDailySnapshotTask()
+
 	// ★ 新增: 初始化指纹系统定时任务
 	service.InitFingerprintCron()
 

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 )
 
@@ -111,7 +113,49 @@ type rankingPeriodConfig struct {
 
 type rankingCacheItem struct {
 	expiresAt time.Time
-	data      *RankingsResponse
+	data      any
+}
+
+type UserRankingMetric string
+
+const (
+	UserRankingMetricBalance     UserRankingMetric = "balance"
+	UserRankingMetricInvites     UserRankingMetric = "invites"
+	UserRankingMetricConsumption UserRankingMetric = "consumption"
+)
+
+type UserRankingPeriod string
+
+const (
+	UserRankingPeriodDaily UserRankingPeriod = "daily"
+	UserRankingPeriodTotal UserRankingPeriod = "total"
+)
+
+type UserRankingVisibility string
+
+const (
+	UserRankingVisibilityPublic   UserRankingVisibility = "public"
+	UserRankingVisibilityAuthOnly UserRankingVisibility = "auth-only"
+)
+
+const userRankingVisibilityOptionKey = "ranking_setting.user_visibility"
+
+type UserRankingsResponse struct {
+	Scope      string            `json:"scope"`
+	Metric     UserRankingMetric `json:"metric"`
+	Period     UserRankingPeriod `json:"period"`
+	Date       string            `json:"date,omitempty"`
+	Visibility string            `json:"visibility"`
+	UpdatedAt  int64             `json:"updated_at"`
+	Items      []UserRankingItem `json:"items"`
+}
+
+type UserRankingItem struct {
+	Rank        int    `json:"rank"`
+	UserId      int    `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Value       int64  `json:"value"`
 }
 
 type rankingModelMeta struct {
@@ -143,8 +187,11 @@ func GetRankingsSnapshot(period string) (*RankingsResponse, error) {
 	now := time.Now()
 	rankingCacheMu.Lock()
 	if item, ok := rankingCache[config.id]; ok && now.Before(item.expiresAt) {
-		rankingCacheMu.Unlock()
-		return item.data, nil
+		cached, ok := item.data.(*RankingsResponse)
+		if ok {
+			rankingCacheMu.Unlock()
+			return cached, nil
+		}
 	}
 	rankingCacheMu.Unlock()
 
@@ -161,6 +208,190 @@ func GetRankingsSnapshot(period string) (*RankingsResponse, error) {
 	rankingCacheMu.Unlock()
 
 	return data, nil
+}
+
+func GetUserRankingsSnapshot(metric string, period string, date string) (*UserRankingsResponse, error) {
+	parsedMetric, err := parseUserRankingMetric(metric)
+	if err != nil {
+		return nil, err
+	}
+	parsedPeriod, err := parseUserRankingPeriod(period, parsedMetric)
+	if err != nil {
+		return nil, err
+	}
+	snapshotDate, err := parseUserRankingDate(date)
+	if err != nil {
+		return nil, err
+	}
+	visibility := GetUserRankingVisibility()
+	now := time.Now()
+	todayDate := formatUserRankingDate(now)
+	isHistoryDate := snapshotDate != "" && snapshotDate != todayDate
+
+	cacheKey := fmt.Sprintf("user:%s:%s:%s:%s", parsedMetric, parsedPeriod, visibility, snapshotDate)
+
+	rankingCacheMu.Lock()
+	if item, ok := rankingCache[cacheKey]; ok && now.Before(item.expiresAt) {
+		cached, ok := item.data.(*UserRankingsResponse)
+		if ok {
+			rankingCacheMu.Unlock()
+			return cached, nil
+		}
+	}
+	rankingCacheMu.Unlock()
+
+	var rows []model.UserRankingValueRow
+	var updatedAt int64
+	if isHistoryDate {
+		rows, updatedAt, err = getUserRankingSnapshotRows(parsedMetric, parsedPeriod, snapshotDate)
+	} else {
+		rows, err = buildUserRankingRows(parsedMetric, parsedPeriod, now)
+		updatedAt = now.Unix()
+		snapshotDateForSave := todayDate
+		if err == nil {
+			err = model.SaveUserRankingSnapshot(snapshotDateForSave, string(parsedMetric), string(parsedPeriod), rows, updatedAt)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]UserRankingItem, 0, len(rows))
+	for idx, row := range rows {
+		items = append(items, UserRankingItem{
+			Rank:        idx + 1,
+			UserId:      row.UserId,
+			Username:    row.Username,
+			DisplayName: row.DisplayName,
+			Value:       row.Value,
+		})
+	}
+
+	resp := &UserRankingsResponse{
+		Scope:      "users",
+		Metric:     parsedMetric,
+		Period:     parsedPeriod,
+		Date:       snapshotDate,
+		Visibility: string(visibility),
+		UpdatedAt:  updatedAt,
+		Items:      items,
+	}
+
+	rankingCacheMu.Lock()
+	rankingCache[cacheKey] = rankingCacheItem{
+		expiresAt: now.Add(rankingCacheTTL),
+		data:      resp,
+	}
+	rankingCacheMu.Unlock()
+
+	return resp, nil
+}
+
+func parseUserRankingDate(date string) (string, error) {
+	trimmed := strings.TrimSpace(date)
+	if trimmed == "" {
+		return "", nil
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", trimmed, time.Local)
+	if err != nil {
+		return "", fmt.Errorf("invalid ranking date: %s", date)
+	}
+	return formatUserRankingDate(parsed), nil
+}
+
+func formatUserRankingDate(date time.Time) string {
+	return date.In(time.Local).Format("2006-01-02")
+}
+
+func getUserRankingSnapshotRows(metric UserRankingMetric, period UserRankingPeriod, snapshotDate string) ([]model.UserRankingValueRow, int64, error) {
+	rows, snapshotAt, err := model.GetUserRankingSnapshot(snapshotDate, string(metric), string(period), rankingLeaderboardLimit)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(rows) > 0 {
+		return rows, snapshotAt, nil
+	}
+	return []model.UserRankingValueRow{}, 0, nil
+}
+
+func InvalidateUserRankingCache() {
+	rankingCacheMu.Lock()
+	defer rankingCacheMu.Unlock()
+	for key := range rankingCache {
+		if strings.HasPrefix(key, "user:") {
+			delete(rankingCache, key)
+		}
+	}
+}
+
+func GetUserRankingVisibility() UserRankingVisibility {
+	common.OptionMapRWMutex.RLock()
+	raw := strings.TrimSpace(common.OptionMap[userRankingVisibilityOptionKey])
+	common.OptionMapRWMutex.RUnlock()
+
+	switch strings.ToLower(raw) {
+	case string(UserRankingVisibilityAuthOnly):
+		return UserRankingVisibilityAuthOnly
+	case string(UserRankingVisibilityPublic):
+		return UserRankingVisibilityPublic
+	default:
+		return UserRankingVisibilityPublic
+	}
+}
+
+func parseUserRankingMetric(metric string) (UserRankingMetric, error) {
+	switch strings.ToLower(strings.TrimSpace(metric)) {
+	case "", string(UserRankingMetricBalance):
+		return UserRankingMetricBalance, nil
+	case string(UserRankingMetricInvites):
+		return UserRankingMetricInvites, nil
+	case string(UserRankingMetricConsumption):
+		return UserRankingMetricConsumption, nil
+	default:
+		return "", fmt.Errorf("invalid ranking metric: %s", metric)
+	}
+}
+
+func parseUserRankingPeriod(period string, metric UserRankingMetric) (UserRankingPeriod, error) {
+	if metric == UserRankingMetricBalance {
+		return UserRankingPeriodTotal, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(period)) {
+	case "", string(UserRankingPeriodTotal):
+		return UserRankingPeriodTotal, nil
+	case string(UserRankingPeriodDaily):
+		return UserRankingPeriodDaily, nil
+	default:
+		return "", fmt.Errorf("invalid ranking period: %s", period)
+	}
+}
+
+func buildUserRankingRows(metric UserRankingMetric, period UserRankingPeriod, now time.Time) ([]model.UserRankingValueRow, error) {
+	switch metric {
+	case UserRankingMetricBalance:
+		return model.GetUserBalanceRanking(rankingLeaderboardLimit)
+	case UserRankingMetricInvites:
+		if period == UserRankingPeriodDaily {
+			start, end := currentDayRange(now)
+			return model.GetUserInviteDailyRanking(start, end, rankingLeaderboardLimit)
+		}
+		return model.GetUserInviteTotalRanking(rankingLeaderboardLimit)
+	case UserRankingMetricConsumption:
+		if period == UserRankingPeriodDaily {
+			start, end := currentDayRange(now)
+			return model.GetUserConsumptionDailyRanking(start, end, rankingLeaderboardLimit)
+		}
+		return model.GetUserConsumptionTotalRanking(rankingLeaderboardLimit)
+	default:
+		return nil, fmt.Errorf("invalid ranking metric: %s", metric)
+	}
+}
+
+func currentDayRange(now time.Time) (int64, int64) {
+	loc := now.Location()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	nextDay := dayStart.Add(24 * time.Hour)
+	return dayStart.Unix(), nextDay.Unix()
 }
 
 func rankingConfig(period string) (rankingPeriodConfig, error) {

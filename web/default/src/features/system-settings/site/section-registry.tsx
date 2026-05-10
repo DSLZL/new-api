@@ -7,6 +7,7 @@ import {
 } from '../maintenance/config'
 import { HeaderNavigationSection } from '../maintenance/header-navigation-section'
 import { NoticeSection } from '../maintenance/notice-section'
+import { RankingVisibilitySection } from '../maintenance/ranking-visibility-section'
 import { SidebarModulesSection } from '../maintenance/sidebar-modules-section'
 import type { SiteSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
@@ -75,6 +76,16 @@ const SITE_SECTIONS = [
         />
       )
     },
+  },
+  {
+    id: 'ranking-visibility',
+    titleKey: 'Leaderboard visibility',
+    descriptionKey: 'Configure user rankings access mode',
+    build: (settings: SiteSettings) => (
+      <RankingVisibilitySection
+        value={settings['ranking_setting.user_visibility']}
+      />
+    ),
   },
 ] as const
 

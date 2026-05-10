@@ -18,6 +18,7 @@ const defaultSiteSettings: SiteSettings = {
   'legal.privacy_policy': '',
   HeaderNavModules: '',
   SidebarModulesAdmin: '',
+  'ranking_setting.user_visibility': 'public',
 }
 
 export function SiteSettings() {
