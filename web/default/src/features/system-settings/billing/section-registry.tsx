@@ -1,5 +1,6 @@
 import { parseCurrencyDisplayType } from '@/lib/currency'
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
+import { RankingRewardSettingsSection } from '../general/ranking-reward-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
@@ -182,6 +183,19 @@ const BILLING_SECTIONS = [
           enabled: settings['checkin_setting.enabled'],
           minQuota: settings['checkin_setting.min_quota'],
           maxQuota: settings['checkin_setting.max_quota'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'ranking-reward',
+    titleKey: 'Ranking Rewards',
+    descriptionKey: 'Configure leaderboard rank rewards for users',
+    build: (settings: BillingSettings) => (
+      <RankingRewardSettingsSection
+        defaultValues={{
+          enabled: settings['ranking_reward_setting.enabled'],
+          rules: settings['ranking_reward_setting.rules'],
         }}
       />
     ),

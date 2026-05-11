@@ -315,13 +315,30 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "ranking_reward_setting.enabled":
+		if option.Value != "true" && option.Value != "false" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "无效的参数",
+			})
+			return
+		}
+	case "ranking_reward_setting.rules":
+		_, err = service.ParseRankingRewardRules(option.Value.(string))
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 	}
 	err = model.UpdateOption(option.Key, option.Value.(string))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if option.Key == "ranking_setting.user_visibility" {
+	if option.Key == "ranking_setting.user_visibility" || option.Key == "ranking_reward_setting.enabled" || option.Key == "ranking_reward_setting.rules" {
 		service.InvalidateUserRankingCache()
 	}
 	c.JSON(http.StatusOK, gin.H{

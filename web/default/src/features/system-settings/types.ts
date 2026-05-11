@@ -239,6 +239,8 @@ export type BillingSettings = {
   'checkin_setting.enabled': boolean
   'checkin_setting.min_quota': number
   'checkin_setting.max_quota': number
+  'ranking_reward_setting.enabled': boolean
+  'ranking_reward_setting.rules': string
 }
 
 export type OperationsSettings = {

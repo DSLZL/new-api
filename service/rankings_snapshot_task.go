@@ -25,6 +25,7 @@ var (
 	userRankingSnapshotTaskOnce     sync.Once
 	userRankingSnapshotTaskRunning  atomic.Bool
 	userRankingSnapshotLastDateKey  atomic.Int64
+	userRankingSettlementLastDateKey atomic.Int64
 	userRankingSnapshotNetworkNowFn = fetchNetworkNow
 )
 
@@ -61,19 +62,32 @@ func runUserRankingDailySnapshotTick() {
 }
 
 func runUserRankingDailySnapshotOnce(now time.Time) {
-	snapshotCtx := resolveUserRankingSnapshotContext(now)
-	lastDateKey := userRankingSnapshotLastDateKey.Load()
-	if lastDateKey == snapshotCtx.dateKey {
-		return
+	progressCtx := resolveUserRankingProgressContext(now)
+	if err := trackUserRankingRewardProgress(progressCtx); err != nil {
+		logger.LogWarn(context.Background(), fmt.Sprintf("user ranking reward progress task failed: date=%s err=%v", progressCtx.snapshotDate, err))
 	}
 
+	snapshotCtx := resolveUserRankingSnapshotContext(now)
 	ctx := context.Background()
-	if err := persistUserRankingDailySnapshots(snapshotCtx); err != nil {
-		logger.LogWarn(ctx, fmt.Sprintf("user ranking snapshot task failed: date=%s err=%v", snapshotCtx.snapshotDate, err))
-		return
+	lastSnapshotDateKey := userRankingSnapshotLastDateKey.Load()
+	if lastSnapshotDateKey != snapshotCtx.dateKey {
+		if err := persistUserRankingDailySnapshots(snapshotCtx); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("user ranking snapshot task failed: date=%s err=%v", snapshotCtx.snapshotDate, err))
+			return
+		}
+		userRankingSnapshotLastDateKey.Store(snapshotCtx.dateKey)
+		InvalidateUserRankingCache()
 	}
-	userRankingSnapshotLastDateKey.Store(snapshotCtx.dateKey)
-	InvalidateUserRankingCache()
+
+	lastSettlementDateKey := userRankingSettlementLastDateKey.Load()
+	if lastSettlementDateKey != snapshotCtx.dateKey {
+		if err := settleUserRankingRewardsForSnapshot(snapshotCtx); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("user ranking reward settlement task failed: date=%s err=%v", snapshotCtx.snapshotDate, err))
+			return
+		}
+		userRankingSettlementLastDateKey.Store(snapshotCtx.dateKey)
+	}
+
 	logger.LogInfo(ctx, fmt.Sprintf("user ranking snapshot task completed: date=%s ts=%d", snapshotCtx.snapshotDate, snapshotCtx.snapshotAt.Unix()))
 }
 
@@ -93,6 +107,17 @@ func resolveUserRankingSnapshotContext(now time.Time) userRankingSnapshotContext
 		snapshotDayRef: targetDay.Add(12 * time.Hour),
 		snapshotAt:     beijingNow,
 		dateKey:        beijingDateKey(targetDay),
+	}
+}
+
+func resolveUserRankingProgressContext(now time.Time) userRankingSnapshotContext {
+	beijingNow := toBeijingTime(now)
+	dayStart := time.Date(beijingNow.Year(), beijingNow.Month(), beijingNow.Day(), 0, 0, 0, 0, beijingNow.Location())
+	return userRankingSnapshotContext{
+		snapshotDate:   formatUserRankingDate(dayStart),
+		snapshotDayRef: beijingNow,
+		snapshotAt:     beijingNow,
+		dateKey:        beijingDateKey(dayStart),
 	}
 }
 
@@ -122,6 +147,7 @@ type userRankingSnapshotTarget struct {
 
 func userRankingSnapshotTargets() []userRankingSnapshotTarget {
 	targets := []userRankingSnapshotTarget{
+		{metric: UserRankingMetricBalance, period: UserRankingPeriodDaily},
 		{metric: UserRankingMetricBalance, period: UserRankingPeriodTotal},
 		{metric: UserRankingMetricInvites, period: UserRankingPeriodDaily},
 		{metric: UserRankingMetricInvites, period: UserRankingPeriodTotal},

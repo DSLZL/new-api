@@ -88,6 +88,8 @@ const defaultBillingSettings: BillingSettings = {
   'checkin_setting.enabled': false,
   'checkin_setting.min_quota': 1000,
   'checkin_setting.max_quota': 10000,
+  'ranking_reward_setting.enabled': false,
+  'ranking_reward_setting.rules': '{}',
 }
 
 export function BillingSettings() {
