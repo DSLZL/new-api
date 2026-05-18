@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 import {
@@ -28,7 +28,7 @@ type UseInviteCodeResult = {
   historyLoading: boolean
   refreshResult: InviteCodeRefreshPayload | null
   updateRules: (input: UpdateInviteCodeRulesInput) => Promise<boolean>
-  refresh: () => Promise<boolean>
+  refresh: (length?: number) => Promise<boolean>
   loadHistory: () => Promise<void>
   clearRefreshResult: () => void
   refetch: () => Promise<void>
@@ -52,6 +52,7 @@ export function useInviteCode(): UseInviteCodeResult {
   const [refreshResult, setRefreshResult] = useState<InviteCodeRefreshPayload | null>(
     null
   )
+  const historyRequestRef = useRef<Promise<void> | null>(null)
 
   const syncInviteState = useCallback((detail: AffiliateCodeDetail | null) => {
     setInviteCode(detail)
@@ -78,19 +79,30 @@ export function useInviteCode(): UseInviteCodeResult {
   }, [syncInviteState])
 
   const loadHistory = useCallback(async () => {
-    try {
-      setHistoryLoading(true)
-      const response = await getInviteCodeHistory()
-      if (response.success && response.data) {
-        setHistory(response.data)
-      }
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to fetch invite code history:', error)
-      toast.error(i18next.t('Failed to load invite code history'))
-    } finally {
-      setHistoryLoading(false)
+    if (historyRequestRef.current) {
+      await historyRequestRef.current
+      return
     }
+
+    const request = (async () => {
+      try {
+        setHistoryLoading(true)
+        const response = await getInviteCodeHistory()
+        if (response.success && response.data) {
+          setHistory(response.data)
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to fetch invite code history:', error)
+        toast.error(i18next.t('Failed to load invite code history'))
+      } finally {
+        setHistoryLoading(false)
+        historyRequestRef.current = null
+      }
+    })()
+
+    historyRequestRef.current = request
+    await request
   }, [])
 
   const updateRules = useCallback(
@@ -118,10 +130,16 @@ export function useInviteCode(): UseInviteCodeResult {
     [syncInviteState]
   )
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (length?: number) => {
     try {
       setRefreshing(true)
-      const response = await refreshInviteCode()
+      const normalizedLength =
+        typeof length === 'number' && Number.isFinite(length)
+          ? Math.max(4, Math.min(10, Math.floor(length)))
+          : undefined
+      const response = await refreshInviteCode(
+        normalizedLength ? { length: normalizedLength } : {}
+      )
       if (response.success && response.data?.current) {
         syncInviteState(response.data.current)
         setRefreshResult(response.data)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import {
@@ -31,7 +31,7 @@ interface InviteCodeManagerDialogProps {
   refreshing: boolean
   refreshResult: InviteCodeRefreshPayload | null
   onUpdateRules: (input: { maxUses: number; expireDays: number }) => Promise<boolean>
-  onRefresh: () => Promise<boolean>
+  onRefresh: (length?: number) => Promise<boolean>
   onLoadHistory: () => Promise<void>
   onClearRefreshResult: () => void
 }
@@ -77,18 +77,24 @@ export function InviteCodeManagerDialog({
   const { t } = useTranslation()
   const [maxUses, setMaxUses] = useState(1)
   const [expireDays, setExpireDays] = useState(1)
+  const [refreshLength, setRefreshLength] = useState(8)
+  const historyLoadedForOpenRef = useRef(false)
 
   useEffect(() => {
     if (!inviteCode) return
     setMaxUses(Math.max(1, inviteCode.max_uses))
     setExpireDays(getExpireDays(inviteCode))
+    setRefreshLength(Math.max(4, Math.min(10, inviteCode.code?.length || 8)))
   }, [inviteCode])
 
   useEffect(() => {
     if (!open) {
+      historyLoadedForOpenRef.current = false
       onClearRefreshResult()
       return
     }
+    if (historyLoadedForOpenRef.current) return
+    historyLoadedForOpenRef.current = true
     void onLoadHistory()
   }, [open, onClearRefreshResult, onLoadHistory])
 
@@ -108,7 +114,7 @@ export function InviteCodeManagerDialog({
   }
 
   const handleRefresh = async () => {
-    const ok = await onRefresh()
+    const ok = await onRefresh(Math.max(4, Math.min(10, Math.floor(refreshLength))))
     if (ok) {
       await onLoadHistory()
     }
@@ -170,6 +176,18 @@ export function InviteCodeManagerDialog({
                 value={expireDays}
                 onChange={(event) =>
                   setExpireDays(Math.max(1, event.target.valueAsNumber || 1))
+                }
+              />
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <label className='text-sm font-medium'>{t('Refresh code length')}</label>
+              <Input
+                type='number'
+                min={4}
+                max={10}
+                value={refreshLength}
+                onChange={(event) =>
+                  setRefreshLength(Math.max(4, Math.min(10, event.target.valueAsNumber || 8)))
                 }
               />
             </div>

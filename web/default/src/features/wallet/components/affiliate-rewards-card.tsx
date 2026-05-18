@@ -93,6 +93,7 @@ export function AffiliateRewardsCard({
               {t('Expires at')}: {formatTimestampToDate(inviteCode?.expires_at)}
             </Badge>
             <Button
+              type='button'
               variant='outline'
               size='sm'
               className='ml-auto'
@@ -132,6 +133,7 @@ export function AffiliateRewardsCard({
               aria-label={t('Copy referral link')}
             />
             <Button
+              type='button'
               variant='outline'
               size='icon-sm'
               className='shrink-0'
@@ -141,6 +143,7 @@ export function AffiliateRewardsCard({
               <History className='size-4' />
             </Button>
             <Button
+              type='button'
               variant='outline'
               size='icon-sm'
               className='shrink-0'
@@ -151,6 +154,7 @@ export function AffiliateRewardsCard({
             </Button>
             {hasRewards && (
               <Button
+                type='button'
                 onClick={onTransfer}
                 className='h-9 shrink-0 px-3'
                 size='sm'

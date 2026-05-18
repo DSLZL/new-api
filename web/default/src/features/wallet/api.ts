@@ -13,6 +13,7 @@ import type {
   AffiliateCodeResponse,
   InviteCodeHistoryResponse,
   InviteCodeRefreshResponse,
+  RefreshInviteCodeRequest,
   AffiliateTransferResponse,
   BillingHistoryResponse,
   CompleteOrderRequest,
@@ -173,8 +174,10 @@ export async function updateInviteCodeRules(
   return res.data
 }
 
-export async function refreshInviteCode(): Promise<InviteCodeRefreshResponse> {
-  const res = await api.post('/api/user/invite-code/refresh', {})
+export async function refreshInviteCode(
+  request: RefreshInviteCodeRequest = {}
+): Promise<InviteCodeRefreshResponse> {
+  const res = await api.post('/api/user/invite-code/refresh', request)
   return res.data
 }
 

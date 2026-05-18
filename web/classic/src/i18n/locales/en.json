@@ -3855,6 +3855,7 @@
   "刷新历史": "Refresh history",
   "最大使用次数": "Max uses",
   "有效天数": "Expire in days",
+  "刷新邀请码长度": "Refresh code length",
   "保存规则会立即更新当前邀请码。刷新会生成新码并让旧码立刻失效。": "Saving rules updates the current code immediately. Refreshing replaces the code and invalidates the previous one.",
   "刷新邀请码": "Refresh invite code",
   "保存邀请码设置": "Save invite settings",

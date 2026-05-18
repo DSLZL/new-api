@@ -4428,6 +4428,7 @@
     "Past codes remain visible here when history retention is enabled.": "Past codes remain visible here when history retention is enabled.",
     "Previous code invalidated": "Previous code invalidated",
     "Refresh code": "Refresh code",
+    "Refresh code length": "Refresh code length",
     "Refresh history": "Refresh history",
     "Save invite settings": "Save invite settings",
     "Saving rules updates the current code immediately. Refreshing replaces the code and invalidates the previous one.": "Saving rules updates the current code immediately. Refreshing replaces the code and invalidates the previous one.",

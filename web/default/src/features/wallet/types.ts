@@ -39,6 +39,9 @@ export interface InviteCodeRefreshPayload {
 }
 
 export type InviteCodeRefreshResponse = ApiResponse<InviteCodeRefreshPayload>
+export interface RefreshInviteCodeRequest {
+  length?: number
+}
 export type InviteCodeHistoryResponse = ApiResponse<AffiliateCodeDetail[]>
 export type AffiliateTransferResponse = ApiResponse
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   Typography,
@@ -82,15 +82,23 @@ const InviteCodeModal = ({
 }) => {
   const [maxUses, setMaxUses] = useState(1);
   const [expireDays, setExpireDays] = useState(1);
+  const [refreshLength, setRefreshLength] = useState(8);
+  const loadedForVisibleRef = useRef(false);
 
   useEffect(() => {
     if (!inviteCode) return;
     setMaxUses(Math.max(1, inviteCode.max_uses || 1));
     setExpireDays(getExpireDays(inviteCode));
+    setRefreshLength(Math.max(4, Math.min(10, inviteCode.code?.length || 8)));
   }, [inviteCode]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      loadedForVisibleRef.current = false;
+      return;
+    }
+    if (loadedForVisibleRef.current) return;
+    loadedForVisibleRef.current = true;
     onRefreshHistory?.();
   }, [visible, onRefreshHistory]);
 
@@ -135,6 +143,10 @@ const InviteCodeModal = ({
       max_uses: Math.max(1, Math.floor(maxUses || 1)),
       expires_at: getExpireAtByDays(expireDays),
     });
+  };
+
+  const handleRefresh = () => {
+    onRefreshCode?.(Math.max(4, Math.min(10, Math.floor(refreshLength || 8))));
   };
 
   return (
@@ -187,6 +199,18 @@ const InviteCodeModal = ({
               style={{ width: '100%' }}
             />
           </div>
+          <div className='md:col-span-2'>
+            <div className='mb-2 text-sm'>{t('刷新邀请码长度')}</div>
+            <InputNumber
+              min={4}
+              max={10}
+              value={refreshLength}
+              onChange={(value) =>
+                setRefreshLength(Math.max(4, Math.min(10, Math.floor(Number(value) || 8))))
+              }
+              style={{ width: '100%' }}
+            />
+          </div>
         </div>
 
         <Text type='tertiary'>
@@ -215,7 +239,7 @@ const InviteCodeModal = ({
 
         <div className='flex justify-end gap-2'>
           <Space>
-            <Button onClick={onRefreshCode} loading={refreshing}>
+            <Button onClick={handleRefresh} loading={refreshing}>
               {t('刷新邀请码')}
             </Button>
             <Button type='primary' onClick={handleSave} loading={saving}>

@@ -327,7 +327,7 @@ func TestRefreshInviteCodePreserveHistory(t *testing.T) {
 	var oldCode, newCode *InviteCode
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var refreshErr error
-		oldCode, newCode, refreshErr = RefreshInviteCode(tx, user.Id, true)
+		oldCode, newCode, refreshErr = RefreshInviteCode(tx, user.Id, true, 0)
 		return refreshErr
 	})
 	require.NoError(t, err)
@@ -364,7 +364,7 @@ func TestRefreshInviteCodeHideHistoryWhenDisabled(t *testing.T) {
 	var oldCode, newCode *InviteCode
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var refreshErr error
-		oldCode, newCode, refreshErr = RefreshInviteCode(tx, user.Id, false)
+		oldCode, newCode, refreshErr = RefreshInviteCode(tx, user.Id, false, 0)
 		return refreshErr
 	})
 	require.NoError(t, err)
@@ -387,6 +387,41 @@ func TestRefreshInviteCodeHideHistoryWhenDisabled(t *testing.T) {
 	active, err := GetActiveInviteCodeByUserID(user.Id)
 	require.NoError(t, err)
 	require.Equal(t, newCode.Id, active.Id)
+}
+
+func TestRefreshInviteCodeWithCustomLength(t *testing.T) {
+	initInviteCodeModelTestDB(t)
+	require.NoError(t, migrateDB())
+	InitOptionMap()
+
+	user := createInviteCodeOwnerForTest(t, "refresh_length")
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		_, err := CreateInitialInviteCodeForUser(tx, user)
+		return err
+	}))
+
+	_, newCode, err := RefreshInviteCode(nil, user.Id, true, 10)
+	require.NoError(t, err)
+	require.NotNil(t, newCode)
+	require.Len(t, newCode.Code, 10)
+}
+
+func TestRefreshInviteCodeRejectsInvalidLength(t *testing.T) {
+	initInviteCodeModelTestDB(t)
+	require.NoError(t, migrateDB())
+	InitOptionMap()
+
+	user := createInviteCodeOwnerForTest(t, "refresh_invalid_length")
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		_, err := CreateInitialInviteCodeForUser(tx, user)
+		return err
+	}))
+
+	_, _, err := RefreshInviteCode(nil, user.Id, true, 3)
+	require.ErrorIs(t, err, ErrInviteCodeRuleInvalid)
+
+	_, _, err = RefreshInviteCode(nil, user.Id, true, 11)
+	require.ErrorIs(t, err, ErrInviteCodeRuleInvalid)
 }
 
 func TestBackfillInviteCodesFromLegacyAffCode(t *testing.T) {

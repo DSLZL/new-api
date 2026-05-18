@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useState, useContext, useRef } from 'react';
+import React, { useEffect, useState, useContext, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   API,
@@ -716,7 +716,7 @@ const TopUp = () => {
     }
   };
 
-  const getInviteHistory = async () => {
+  const getInviteHistory = useCallback(async () => {
     setInviteHistoryLoading(true);
     try {
       const res = await API.get('/api/user/invite-codes/history');
@@ -731,7 +731,7 @@ const TopUp = () => {
     } finally {
       setInviteHistoryLoading(false);
     }
-  };
+  }, [t]);
 
   const updateInviteRules = async (payload) => {
     setInviteSaving(true);
@@ -756,10 +756,15 @@ const TopUp = () => {
     }
   };
 
-  const refreshInviteCode = async () => {
+  const refreshInviteCode = async (length) => {
     setInviteRefreshing(true);
     try {
-      const res = await API.post('/api/user/invite-code/refresh', {});
+      const normalizedLength = Number.isFinite(length)
+        ? Math.max(4, Math.min(10, Math.floor(length)))
+        : undefined;
+      const res = await API.post('/api/user/invite-code/refresh', normalizedLength ? {
+        length: normalizedLength,
+      } : {});
       const { success, message, data } = res.data;
       if (success && data?.current) {
         setInviteCodeDetail(data.current);

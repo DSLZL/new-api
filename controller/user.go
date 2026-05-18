@@ -587,6 +587,10 @@ type inviteCodeRulesUpdateRequest struct {
 	ExpiresAt int64 `json:"expires_at"`
 }
 
+type inviteCodeRefreshRequest struct {
+	Length int `json:"length"`
+}
+
 const inviteCodeRefreshHiddenReason = "refresh_hidden"
 const inviteCodeSecondsPerDay = int64(86400)
 
@@ -666,8 +670,13 @@ func UpdateUserInviteCodeRules(c *gin.Context) {
 func RefreshUserInviteCode(c *gin.Context) {
 	userID := c.GetInt("id")
 	preserveHistory := isInviteCodePreserveHistoryEnabled()
+	var req inviteCodeRefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
 
-	oldCode, newCode, err := model.RefreshInviteCode(nil, userID, preserveHistory)
+	oldCode, newCode, err := model.RefreshInviteCode(nil, userID, preserveHistory, req.Length)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			newCode, err = ensureActiveInviteCodeForUser(userID)
@@ -676,6 +685,9 @@ func RefreshUserInviteCode(c *gin.Context) {
 				return
 			}
 			oldCode = nil
+		} else if errors.Is(err, model.ErrInviteCodeRuleInvalid) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
 		} else {
 			common.ApiError(c, err)
 			return

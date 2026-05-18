@@ -101,7 +101,7 @@ func TestRefreshInviteCode_ConcurrentSingleActiveInvariant(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			err := DB.Transaction(func(tx *gorm.DB) error {
-				_, _, refreshErr := RefreshInviteCode(tx, user.Id, true)
+				_, _, refreshErr := RefreshInviteCode(tx, user.Id, true, 0)
 				return refreshErr
 			})
 			if err == nil {
@@ -137,7 +137,7 @@ func TestRefreshInviteCode_NilTxPath(t *testing.T) {
 	}))
 	require.NotNil(t, initial)
 
-	oldCode, newCode, err := RefreshInviteCode(nil, user.Id, true)
+	oldCode, newCode, err := RefreshInviteCode(nil, user.Id, true, 0)
 	require.NoError(t, err)
 	require.NotNil(t, oldCode)
 	require.NotNil(t, newCode)
@@ -173,7 +173,7 @@ func TestRefreshInviteCode_ConcurrentSingleActiveInvariant_NilTx(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			defer wg.Done()
-			_, _, err := RefreshInviteCode(nil, user.Id, true)
+			_, _, err := RefreshInviteCode(nil, user.Id, true, 0)
 			if err == nil {
 				atomic.AddInt32(&successCount, 1)
 			} else {

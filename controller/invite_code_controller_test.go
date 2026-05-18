@@ -215,6 +215,50 @@ func TestRefreshUserInviteCode(t *testing.T) {
 	require.Equal(t, activeCode.Code, affResp["data"])
 }
 
+func TestRefreshUserInviteCodeWithCustomLength(t *testing.T) {
+	setupInviteCodeControllerTestDB(t)
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["invite_code_preserve_history_enabled"] = "true"
+	common.OptionMapRWMutex.Unlock()
+
+	user := createInviteTestUser(t, "invite_refresh_length_user", "REFRESH-LENGTH-STALE")
+	createInviteCodeRecord(t, user.Id, "REFRESH-CODE-LEN", 3, 0, common.GetTimestamp()+7200)
+
+	ctx, recorder := newInviteCodeAuthedContext(http.MethodPost, "/api/user/invite-code/refresh", `{"length":10}`, user.Id)
+	RefreshUserInviteCode(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeControllerResp(t, recorder)
+	require.Equal(t, true, resp["success"])
+
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok)
+	current, ok := data["current"].(map[string]any)
+	require.True(t, ok)
+	code, ok := current["code"].(string)
+	require.True(t, ok)
+	require.Len(t, code, 10)
+}
+
+func TestRefreshUserInviteCodeRejectsInvalidLength(t *testing.T) {
+	setupInviteCodeControllerTestDB(t)
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["invite_code_preserve_history_enabled"] = "true"
+	common.OptionMapRWMutex.Unlock()
+
+	user := createInviteTestUser(t, "invite_refresh_invalid_length_user", "REFRESH-INVALID-STALE")
+	createInviteCodeRecord(t, user.Id, "REFRESH-CODE-INVALID", 3, 0, common.GetTimestamp()+7200)
+
+	ctx, recorder := newInviteCodeAuthedContext(http.MethodPost, "/api/user/invite-code/refresh", `{"length":3}`, user.Id)
+	RefreshUserInviteCode(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeControllerResp(t, recorder)
+	require.Equal(t, false, resp["success"])
+}
+
 func TestGetAffCode_PreservesLegacyAffCodeByBackfillWhenNoActiveRow(t *testing.T) {
 	setupInviteCodeControllerTestDB(t)
 
@@ -238,9 +282,9 @@ func TestListInviteCodeHistoryHonorsPreserveHistorySwitch(t *testing.T) {
 	user := createInviteTestUser(t, "invite_history_user", "HISTORY-STALE")
 	createInviteCodeRecord(t, user.Id, "HISTORY-CODE-INIT", 5, 0, common.GetTimestamp()+7200)
 
-	visibleOld, _, err := model.RefreshInviteCode(nil, user.Id, true)
+	visibleOld, _, err := model.RefreshInviteCode(nil, user.Id, true, 0)
 	require.NoError(t, err)
-	hiddenOld, _, err := model.RefreshInviteCode(nil, user.Id, false)
+	hiddenOld, _, err := model.RefreshInviteCode(nil, user.Id, false, 0)
 	require.NoError(t, err)
 	require.Equal(t, "", visibleOld.InvalidatedReason)
 	require.Equal(t, "refresh_hidden", hiddenOld.InvalidatedReason)

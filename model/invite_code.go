@@ -23,6 +23,9 @@ const (
 	inviteCodeDefaultMaxUsesLimit  = 100
 	inviteCodeDefaultMaxExpireDays = 365
 	inviteCodeGenerateMaxAttempts  = 24
+	inviteCodeDefaultLength        = 8
+	inviteCodeMinLength            = 4
+	inviteCodeMaxLength            = 10
 )
 
 type InviteCode struct {
@@ -96,6 +99,16 @@ var (
 	ErrInviteCodeExhausted   = errors.New("invite code exhausted")
 	inviteCodeUserLocks      sync.Map
 )
+
+func normalizeInviteCodeLength(length int) (int, error) {
+	if length == 0 {
+		return inviteCodeDefaultLength, nil
+	}
+	if length < inviteCodeMinLength || length > inviteCodeMaxLength {
+		return 0, ErrInviteCodeRuleInvalid
+	}
+	return length, nil
+}
 
 type inviteCodeAuditPayload struct {
 	ID               int    `json:"id"`
@@ -349,11 +362,15 @@ func lockInviteCodeOwnerForUpdate(tx *gorm.DB, userID int) error {
 }
 
 func createInitialInviteCodeForUserTx(tx *gorm.DB, user *User) (*InviteCode, error) {
-	return createInitialInviteCodeForUserTxLocked(tx, user)
+	return createInitialInviteCodeForUserTxLocked(tx, user, inviteCodeDefaultLength)
 }
 
-func createInitialInviteCodeForUserTxLocked(tx *gorm.DB, user *User) (*InviteCode, error) {
+func createInitialInviteCodeForUserTxLocked(tx *gorm.DB, user *User, length int) (*InviteCode, error) {
 	if err := ensureNoActiveInviteCodeExists(tx, user.Id); err != nil {
+		return nil, err
+	}
+	normalizedLength, err := normalizeInviteCodeLength(length)
+	if err != nil {
 		return nil, err
 	}
 
@@ -370,7 +387,7 @@ func createInitialInviteCodeForUserTxLocked(tx *gorm.DB, user *User) (*InviteCod
 	now := common.GetTimestamp()
 	expiresAt := getExpireAtByDays(expireDays, now)
 	for i := 0; i < inviteCodeGenerateMaxAttempts; i++ {
-		candidate := normalizeInviteCode(common.GetRandomString(8))
+		candidate := normalizeInviteCode(common.GetRandomString(normalizedLength))
 		item := &InviteCode{
 			UserId:    user.Id,
 			Code:      candidate,
@@ -406,7 +423,7 @@ func CreateInitialInviteCodeForUser(tx *gorm.DB, user *User) (*InviteCode, error
 		if err := lockInviteCodeOwnerForUpdate(db, user.Id); err != nil {
 			return nil, err
 		}
-		return createInitialInviteCodeForUserTxLocked(db, user)
+		return createInitialInviteCodeForUserTxLocked(db, user, inviteCodeDefaultLength)
 	}
 	var created *InviteCode
 	err := db.Transaction(func(inner *gorm.DB) error {
@@ -414,7 +431,7 @@ func CreateInitialInviteCodeForUser(tx *gorm.DB, user *User) (*InviteCode, error
 			return err
 		}
 		var innerErr error
-		created, innerErr = createInitialInviteCodeForUserTxLocked(inner, user)
+		created, innerErr = createInitialInviteCodeForUserTxLocked(inner, user, inviteCodeDefaultLength)
 		return innerErr
 	})
 	if err != nil {
@@ -582,9 +599,13 @@ func UpdateActiveInviteCodeRules(tx *gorm.DB, userID, maxUses int, expiresAt int
 	return &updated, nil
 }
 
-func refreshInviteCodeTx(tx *gorm.DB, userID int, preserveHistory bool) (*InviteCode, *InviteCode, error) {
+func refreshInviteCodeTx(tx *gorm.DB, userID int, preserveHistory bool, length int) (*InviteCode, *InviteCode, error) {
 	if userID <= 0 {
 		return nil, nil, ErrInviteCodeInvalid
+	}
+	normalizedLength, err := normalizeInviteCodeLength(length)
+	if err != nil {
+		return nil, nil, err
 	}
 	db := getInviteCodeDB(tx)
 	if err := lockInviteCodeOwnerForUpdate(db, userID); err != nil {
@@ -620,7 +641,7 @@ func refreshInviteCodeTx(tx *gorm.DB, userID int, preserveHistory bool) (*Invite
 		return nil, nil, err
 	}
 
-	newCode, err := createInitialInviteCodeForUserTxLocked(db, &User{Id: userID})
+	newCode, err := createInitialInviteCodeForUserTxLocked(db, &User{Id: userID}, normalizedLength)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -631,7 +652,7 @@ func refreshInviteCodeTx(tx *gorm.DB, userID int, preserveHistory bool) (*Invite
 	return &oldCode, newCode, nil
 }
 
-func RefreshInviteCode(tx *gorm.DB, userID int, preserveHistory bool) (*InviteCode, *InviteCode, error) {
+func RefreshInviteCode(tx *gorm.DB, userID int, preserveHistory bool, length int) (*InviteCode, *InviteCode, error) {
 	if userID <= 0 {
 		return nil, nil, ErrInviteCodeInvalid
 	}
@@ -646,7 +667,7 @@ func RefreshInviteCode(tx *gorm.DB, userID int, preserveHistory bool) (*InviteCo
 		var newCode *InviteCode
 		err := DB.Transaction(func(inner *gorm.DB) error {
 			var innerErr error
-			oldCode, newCode, innerErr = refreshInviteCodeTx(inner, userID, preserveHistory)
+			oldCode, newCode, innerErr = refreshInviteCodeTx(inner, userID, preserveHistory, length)
 			return innerErr
 		})
 		if err != nil {
@@ -654,7 +675,7 @@ func RefreshInviteCode(tx *gorm.DB, userID int, preserveHistory bool) (*InviteCo
 		}
 		return oldCode, newCode, nil
 	}
-	return refreshInviteCodeTx(tx, userID, preserveHistory)
+	return refreshInviteCodeTx(tx, userID, preserveHistory, length)
 }
 
 func resolveActiveInviteCodeWithDB(tx *gorm.DB, raw string) (*InviteCode, error) {
