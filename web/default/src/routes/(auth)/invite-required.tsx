@@ -81,12 +81,12 @@ function InviteRequiredPage() {
         </div>
 
         <div className='grid gap-4'>
-          <Input
-            value={inviteCode}
-            onChange={(event) => setInviteCode(event.target.value)}
-            placeholder={t("Use your inviter's 4-character code")}
-            autoComplete='off'
-          />
+            <Input
+              value={inviteCode}
+              onChange={(event) => setInviteCode(event.target.value)}
+              placeholder={t('Use your inviter code')}
+              autoComplete='off'
+            />
           <Button onClick={handleSubmit} disabled={loading}>
             {loading ? t('Loading...') : t('Confirm')}
           </Button>
@@ -99,4 +99,3 @@ function InviteRequiredPage() {
 export const Route = createFileRoute('/(auth)/invite-required')({
   component: InviteRequiredPage,
 })
-

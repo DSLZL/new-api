@@ -52,6 +52,12 @@ export type AuthSettings = {
   EmailDomainRestrictionEnabled: boolean
   EmailAliasRestrictionEnabled: boolean
   EmailDomainWhitelist: string
+  invite_code_max_uses_limit?: number
+  invite_code_max_expire_days?: number
+  invite_code_default_max_uses?: number
+  invite_code_default_max_expire_days?: number
+  invite_code_preserve_history_enabled?: boolean
+  invite_code_audit_enabled?: boolean
   GitHubOAuthEnabled: boolean
   GitHubClientId: string
   GitHubClientSecret: string

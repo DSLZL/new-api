@@ -21,7 +21,25 @@ export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string
 }
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
-export type AffiliateCodeResponse = ApiResponse<string>
+export interface AffiliateCodeDetail {
+  code: string
+  max_uses: number
+  used_count: number
+  expires_at: number
+  status?: string
+  activated_at?: number
+  invalidated_at?: number
+  invalidated_reason?: string
+}
+
+export type AffiliateCodeResponse = ApiResponse<AffiliateCodeDetail>
+export interface InviteCodeRefreshPayload {
+  previous?: AffiliateCodeDetail | null
+  current: AffiliateCodeDetail
+}
+
+export type InviteCodeRefreshResponse = ApiResponse<InviteCodeRefreshPayload>
+export type InviteCodeHistoryResponse = ApiResponse<AffiliateCodeDetail[]>
 export type AffiliateTransferResponse = ApiResponse
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
 export type WaffoPaymentResponse = ApiResponse<
@@ -191,6 +209,11 @@ export interface AffiliateTransferRequest {
   quota: number
 }
 
+export interface UpdateInviteCodeRulesRequest {
+  max_uses: number
+  expires_at: number
+}
+
 /**
  * User wallet data
  */
@@ -211,6 +234,8 @@ export interface UserWalletData {
   aff_history_quota: number
   /** Number of successful affiliate invites */
   aff_count: number
+  /** Current invite code */
+  aff_code?: string
   /** User group */
   group: string
 }

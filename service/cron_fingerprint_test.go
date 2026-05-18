@@ -16,6 +16,7 @@ func TestFullLinkScan_RefreshesTemporalProfilesBeforeScan_WhenPrecomputeReadEnab
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 0; i < 6; i++ {
@@ -71,6 +72,7 @@ func TestFullLinkScan_DoesNotRefreshTemporalProfiles_WhenPrecomputeReadDisabled(
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	base := time.Now().UTC().Add(-2 * time.Hour)
 	for i := 0; i < 6; i++ {
@@ -168,6 +170,7 @@ func TestFullLinkScan_CleansOldFingerprintsUsingRetentionDays(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	now := time.Now().UTC()
 	stale := &model.Fingerprint{UserID: 9901, CompositeHash: "stale", CreatedAt: now.Add(-10 * 24 * time.Hour)}
@@ -303,6 +306,7 @@ func TestFullLinkScan_CleansOldIPUAHistoryUsingRetentionDays(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	now := time.Now().UTC()
 	require.NoError(t, model.DB.Create(&model.IPUAHistory{UserID: 9401, IPAddress: "1.1.1.1", UABrowser: "Chrome", UAOS: "Windows", LastSeen: now.Add(-10 * 24 * time.Hour)}).Error)
@@ -375,6 +379,7 @@ func TestFullLinkScan_RecalculatesExistingLinkConfidenceDownward(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	reviewedAt := time.Date(2026, 4, 8, 10, 0, 0, 0, time.UTC)
 	require.NoError(t, model.DB.Create(&model.AccountLink{
@@ -446,6 +451,7 @@ func TestIncrementalLinkScan_RecalculatesUserPairsAndKeepsUnrelatedPairs(t *test
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	reviewedAt := time.Date(2026, 4, 8, 11, 0, 0, 0, time.UTC)
 	require.NoError(t, model.DB.Create(&model.AccountLink{
@@ -553,6 +559,7 @@ func TestFullLinkScan_CreatesLinkForAllUserPairsWithoutGroupHit(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	fpA := &model.Fingerprint{
 		UserID:       3101,
@@ -603,6 +610,7 @@ func TestIncrementalLinkScan_MergesLatestFingerprintAndDeviceProfileSources(t *t
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	latestFP := &model.Fingerprint{
 		UserID: 3201,
@@ -654,6 +662,7 @@ func TestIncrementalLinkScan_DoesNotFanOutToUnrelatedUsers(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	latestFP := &model.Fingerprint{
 		UserID:       3301,
@@ -704,6 +713,7 @@ func TestFullLinkScan_SkipsWhitelistedPairs(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	reviewedAt := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
 	require.NoError(t, model.DB.Create(&model.AccountLink{
@@ -751,6 +761,7 @@ func TestIncrementalLinkScan_AutoConfirmUsesCompareAndSwap(t *testing.T) {
 	initTestDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.UserDeviceProfile{}, &model.AccountLink{}, &model.UserRiskScore{}, &model.LinkWhitelist{}))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	require.NoError(t, model.DB.Create(&model.AccountLink{
 		UserIDA:    3501,

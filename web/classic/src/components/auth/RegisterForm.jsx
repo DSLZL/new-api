@@ -692,7 +692,7 @@ const RegisterForm = () => {
                   <Form.Input
                     field='aff_code'
                     label={t('邀请码')}
-                    placeholder={t('请输入邀请人的 4 位邀请码')}
+                    placeholder={t('请输入邀请人的邀请码')}
                     name='aff_code'
                     value={inputs.aff_code}
                     onChange={(value) => {

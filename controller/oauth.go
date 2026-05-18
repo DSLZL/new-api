@@ -515,16 +515,6 @@ func ContinueOAuthWithInvite(c *gin.Context) {
 		return
 	}
 
-	inviterId, resolveErr := model.ResolveInviterIDFromAffCode(req.InviteCode)
-	if resolveErr != nil {
-		if errors.Is(resolveErr, model.ErrInviteCodeRequired) || errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
-			jsonOAuthBusinessError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
-			return
-		}
-		common.ApiError(c, resolveErr)
-		return
-	}
-
 	provider := oauth.GetProvider(strings.ToLower(pending.Provider))
 	if provider == nil {
 		_ = clearPendingOAuthRegistration(session)
@@ -560,8 +550,14 @@ func ContinueOAuthWithInvite(c *gin.Context) {
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 	}
+	finalInviterID := 0
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := user.InsertWithTx(tx, inviterId); err != nil {
+		resolvedInviteCode, resolveErr := model.ResolveActiveInviteCodeWithTx(tx, req.InviteCode)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		txInviterID := resolvedInviteCode.UserId
+		if err := user.InsertWithTx(tx, txInviterID); err != nil {
 			return err
 		}
 		if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
@@ -573,24 +569,42 @@ func ContinueOAuthWithInvite(c *gin.Context) {
 			if err := model.CreateUserOAuthBindingWithTx(tx, binding); err != nil {
 				return err
 			}
+			if err := model.ConsumeInviteCode(tx, resolvedInviteCode, user.Id, "oauth"); err != nil {
+				return err
+			}
+			finalInviterID = txInviterID
 			return nil
 		}
 
 		provider.SetProviderUserID(user, pending.ProviderUserID)
-		return tx.Model(user).Updates(map[string]interface{}{
+		if err := tx.Model(user).Updates(map[string]interface{}{
 			"github_id":   user.GitHubId,
 			"discord_id":  user.DiscordId,
 			"oidc_id":     user.OidcId,
 			"linux_do_id": user.LinuxDOId,
 			"wechat_id":   user.WeChatId,
 			"telegram_id": user.TelegramId,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		if err := model.ConsumeInviteCode(tx, resolvedInviteCode, user.Id, "oauth"); err != nil {
+			return err
+		}
+		finalInviterID = txInviterID
+		return nil
 	}); err != nil {
+		if errors.Is(err, model.ErrInviteCodeRequired) ||
+			errors.Is(err, model.ErrInviteCodeInvalid) ||
+			errors.Is(err, model.ErrInviteCodeExpired) ||
+			errors.Is(err, model.ErrInviteCodeExhausted) {
+			jsonOAuthBusinessError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
 
-	user.FinalizeOAuthUserCreation(inviterId)
+	user.FinalizeOAuthUserCreation(finalInviterID)
 	if err := clearPendingOAuthRegistration(session); err != nil {
 		common.ApiError(c, err)
 		return

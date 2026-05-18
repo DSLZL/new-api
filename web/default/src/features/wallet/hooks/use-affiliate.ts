@@ -24,8 +24,8 @@ export function useAffiliate() {
       const response = await getAffiliateCode()
 
       if (response.success && response.data) {
-        setAffiliateCode(response.data)
-        const link = generateAffiliateLink(response.data)
+        setAffiliateCode(response.data.code)
+        const link = generateAffiliateLink(response.data.code)
         setAffiliateLink(link)
       }
     } catch (error) {

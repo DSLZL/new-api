@@ -51,6 +51,12 @@ const SystemSetting = () => {
     PasswordRegisterEnabled: '',
     InviteOnlyRegistrationEnabled: '',
     EmailVerificationEnabled: '',
+    invite_code_max_uses_limit: '',
+    invite_code_max_expire_days: '',
+    invite_code_default_max_uses: '',
+    invite_code_default_max_expire_days: '',
+    invite_code_preserve_history_enabled: '',
+    invite_code_audit_enabled: '',
     GitHubOAuthEnabled: '',
     GitHubClientId: '',
     GitHubClientSecret: '',
@@ -177,6 +183,8 @@ const SystemSetting = () => {
           case 'PasswordRegisterEnabled':
           case 'InviteOnlyRegistrationEnabled':
           case 'EmailVerificationEnabled':
+          case 'invite_code_preserve_history_enabled':
+          case 'invite_code_audit_enabled':
           case 'GitHubOAuthEnabled':
           case 'WeChatAuthEnabled':
           case 'TelegramOAuthEnabled':
@@ -1101,6 +1109,111 @@ const SystemSetting = () => {
                         }
                       >
                         {t('允许通过 OIDC 进行登录')}
+                      </Form.Checkbox>
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field='invite_code_max_uses_limit'
+                        label={t('邀请码最大可用次数上限')}
+                        type='number'
+                        min={1}
+                        onBlur={() =>
+                          updateOptions([
+                            {
+                              key: 'invite_code_max_uses_limit',
+                              value: inputs.invite_code_max_uses_limit,
+                            },
+                          ])
+                        }
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field='invite_code_max_expire_days'
+                        label={t('邀请码最大有效天数上限')}
+                        type='number'
+                        min={1}
+                        onBlur={() =>
+                          updateOptions([
+                            {
+                              key: 'invite_code_max_expire_days',
+                              value: inputs.invite_code_max_expire_days,
+                            },
+                          ])
+                        }
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field='invite_code_default_max_uses'
+                        label={t('邀请码默认可用次数')}
+                        type='number'
+                        min={1}
+                        onBlur={() =>
+                          updateOptions([
+                            {
+                              key: 'invite_code_default_max_uses',
+                              value: inputs.invite_code_default_max_uses,
+                            },
+                          ])
+                        }
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field='invite_code_default_max_expire_days'
+                        label={t('邀请码默认有效天数')}
+                        type='number'
+                        min={1}
+                        onBlur={() =>
+                          updateOptions([
+                            {
+                              key: 'invite_code_default_max_expire_days',
+                              value:
+                                inputs.invite_code_default_max_expire_days,
+                            },
+                          ])
+                        }
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Checkbox
+                        field='invite_code_preserve_history_enabled'
+                        noLabel
+                        onChange={(e) =>
+                          handleCheckboxChange(
+                            'invite_code_preserve_history_enabled',
+                            e,
+                          )
+                        }
+                      >
+                        {t('邀请码耗尽后保留历史记录')}
+                      </Form.Checkbox>
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Checkbox
+                        field='invite_code_audit_enabled'
+                        noLabel
+                        onChange={(e) =>
+                          handleCheckboxChange('invite_code_audit_enabled', e)
+                        }
+                      >
+                        {t('启用邀请码审计日志')}
                       </Form.Checkbox>
                     </Col>
                   </Row>

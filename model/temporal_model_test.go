@@ -13,11 +13,18 @@ import (
 
 func initTemporalModelRawTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	oldDB := DB
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&UserTemporalProfile{}, &UserSession{}))
 	DB = db
+	t.Cleanup(func() {
+		DB = oldDB
+		_ = sqlDB.Close()
+	})
 	return db
 }
 

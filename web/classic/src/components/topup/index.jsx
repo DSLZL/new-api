@@ -39,6 +39,7 @@ import InvitationCard from './InvitationCard';
 import TransferModal from './modals/TransferModal';
 import PaymentConfirmModal from './modals/PaymentConfirmModal';
 import TopupHistoryModal from './modals/TopupHistoryModal';
+import InviteCodeModal from './modals/InviteCodeModal';
 
 const TopUp = () => {
   const { t } = useTranslation();
@@ -90,6 +91,12 @@ const TopUp = () => {
   const [affLink, setAffLink] = useState('');
   const [openTransfer, setOpenTransfer] = useState(false);
   const [transferAmount, setTransferAmount] = useState(0);
+  const [openInviteModal, setOpenInviteModal] = useState(false);
+  const [inviteCodeDetail, setInviteCodeDetail] = useState(null);
+  const [inviteCodeHistory, setInviteCodeHistory] = useState([]);
+  const [inviteHistoryLoading, setInviteHistoryLoading] = useState(false);
+  const [inviteSaving, setInviteSaving] = useState(false);
+  const [inviteRefreshing, setInviteRefreshing] = useState(false);
 
   // 账单Modal状态
   const [openHistory, setOpenHistory] = useState(false);
@@ -695,16 +702,78 @@ const TopUp = () => {
 
   // 获取邀请链接
   const getAffLink = async () => {
-    const res = await API.get('/api/user/aff');
+    const res = await API.get('/api/user/invite-code');
     const { success, message, data } = res.data;
     if (success) {
-      if (typeof data === 'string' && data.trim()) {
-        localStorage.setItem('aff', data.trim());
+      if (data?.code) {
+        localStorage.setItem('aff', data.code.trim());
       }
-      let link = `${window.location.origin}/register?aff=${data}`;
+      setInviteCodeDetail(data);
+      let link = `${window.location.origin}/register?aff=${data?.code || ''}`;
       setAffLink(link);
     } else {
       showError(message);
+    }
+  };
+
+  const getInviteHistory = async () => {
+    setInviteHistoryLoading(true);
+    try {
+      const res = await API.get('/api/user/invite-codes/history');
+      const { success, message, data } = res.data;
+      if (success) {
+        setInviteCodeHistory(data || []);
+      } else {
+        showError(message || t('加载失败'));
+      }
+    } catch (error) {
+      showError(t('加载邀请码历史失败'));
+    } finally {
+      setInviteHistoryLoading(false);
+    }
+  };
+
+  const updateInviteRules = async (payload) => {
+    setInviteSaving(true);
+    try {
+      const res = await API.put('/api/user/invite-code', payload);
+      const { success, message, data } = res.data;
+      if (success) {
+        setInviteCodeDetail(data);
+        if (data?.code) {
+          localStorage.setItem('aff', data.code.trim());
+          setAffLink(`${window.location.origin}/register?aff=${data.code}`);
+        }
+        showSuccess(t('邀请码设置已保存'));
+        getInviteHistory().then();
+      } else {
+        showError(message || t('保存邀请码设置失败'));
+      }
+    } catch (error) {
+      showError(t('保存邀请码设置失败'));
+    } finally {
+      setInviteSaving(false);
+    }
+  };
+
+  const refreshInviteCode = async () => {
+    setInviteRefreshing(true);
+    try {
+      const res = await API.post('/api/user/invite-code/refresh', {});
+      const { success, message, data } = res.data;
+      if (success && data?.current) {
+        setInviteCodeDetail(data.current);
+        localStorage.setItem('aff', data.current.code.trim());
+        setAffLink(`${window.location.origin}/register?aff=${data.current.code}`);
+        showSuccess(t('邀请码已刷新'));
+        getInviteHistory().then();
+      } else {
+        showError(message || t('刷新邀请码失败'));
+      }
+    } catch (error) {
+      showError(t('刷新邀请码失败'));
+    } finally {
+      setInviteRefreshing(false);
     }
   };
 
@@ -917,6 +986,20 @@ const TopUp = () => {
         t={t}
       />
 
+      <InviteCodeModal
+        visible={openInviteModal}
+        onCancel={() => setOpenInviteModal(false)}
+        t={t}
+        inviteCode={inviteCodeDetail}
+        inviteHistory={inviteCodeHistory}
+        historyLoading={inviteHistoryLoading}
+        onRefreshHistory={getInviteHistory}
+        onSaveRules={updateInviteRules}
+        onRefreshCode={refreshInviteCode}
+        saving={inviteSaving}
+        refreshing={inviteRefreshing}
+      />
+
       {/* Creem 充值确认模态框 */}
       <Modal
         title={t('确定要充值 $')}
@@ -999,6 +1082,11 @@ const TopUp = () => {
           setOpenTransfer={setOpenTransfer}
           affLink={affLink}
           handleAffLinkClick={handleAffLinkClick}
+          inviteCodeDetail={inviteCodeDetail}
+          openInviteModal={() => {
+            setOpenInviteModal(true);
+            getInviteHistory().then();
+          }}
         />
       </div>
     </div>

@@ -24,6 +24,7 @@ import (
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type LoginRequest struct {
@@ -288,25 +289,9 @@ func Register(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserExists)
 		return
 	}
-	affCode := model.NormalizeAffCode(user.AffCode) // this code is the inviter's code, not the user's own code
 	inviterId := 0
-	if common.InviteOnlyRegistrationEnabled {
-		resolvedInviterId, resolveErr := model.ResolveInviterIDFromAffCode(affCode)
-		if resolveErr != nil {
-			if errors.Is(resolveErr, model.ErrInviteCodeRequired) {
-				apiInviteError(c, InviteCodeRequiredCode, i18n.T(c, i18n.MsgUserAffCodeEmpty))
-				return
-			}
-			if errors.Is(resolveErr, model.ErrInviteCodeInvalid) {
-				apiInviteError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
-				return
-			}
-			common.ApiError(c, resolveErr)
-			return
-		}
-		inviterId = resolvedInviterId
-	} else if affCode != "" {
-		inviterId, _ = model.GetUserIdByAffCode(affCode)
+	if normalizedAffCode := model.NormalizeAffCode(user.AffCode); !common.InviteOnlyRegistrationEnabled && normalizedAffCode != "" {
+		inviterId, _ = model.GetUserIdByAffCode(normalizedAffCode)
 	}
 	cleanUser := model.User{
 		Username:    user.Username,
@@ -318,17 +303,46 @@ func Register(c *gin.Context) {
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
 	}
-	if err := cleanUser.Insert(inviterId); err != nil {
+	finalInviterID := inviterId
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		txInviterID := inviterId
+		var resolvedInviteCode *model.InviteCode
+		if common.InviteOnlyRegistrationEnabled {
+			resolvedCode, resolveErr := model.ResolveActiveInviteCodeWithTx(tx, user.AffCode)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			resolvedInviteCode = resolvedCode
+			txInviterID = resolvedCode.UserId
+		}
+
+		if err := cleanUser.InsertWithTx(tx, txInviterID); err != nil {
+			return err
+		}
+		if resolvedInviteCode != nil {
+			if err := model.ConsumeInviteCode(tx, resolvedInviteCode, cleanUser.Id, "password"); err != nil {
+				return err
+			}
+		}
+		finalInviterID = txInviterID
+		return nil
+	}); err != nil {
+		if errors.Is(err, model.ErrInviteCodeRequired) {
+			apiInviteError(c, InviteCodeRequiredCode, i18n.T(c, i18n.MsgUserAffCodeEmpty))
+			return
+		}
+		if errors.Is(err, model.ErrInviteCodeInvalid) ||
+			errors.Is(err, model.ErrInviteCodeExpired) ||
+			errors.Is(err, model.ErrInviteCodeExhausted) {
+			apiInviteError(c, InviteCodeInvalidCode, i18n.T(c, i18n.MsgInvalidParams))
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
+	cleanUser.FinalizeOAuthUserCreation(finalInviterID)
+	insertedUser := cleanUser
 
-	// 获取插入后的用户ID
-	var insertedUser model.User
-	if err := model.DB.Where("username = ?", cleanUser.Username).First(&insertedUser).Error; err != nil {
-		common.ApiErrorI18n(c, i18n.MsgUserRegisterFailed)
-		return
-	}
 	// 生成默认令牌
 	if constant.GenerateDefaultToken {
 		key, err := common.GenerateKey()
@@ -568,27 +582,146 @@ func TransferAffQuota(c *gin.Context) {
 	common.ApiSuccessI18n(c, i18n.MsgUserTransferSuccess, nil)
 }
 
-func GetAffCode(c *gin.Context) {
-	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
+type inviteCodeRulesUpdateRequest struct {
+	MaxUses   int   `json:"max_uses"`
+	ExpiresAt int64 `json:"expires_at"`
+}
+
+const inviteCodeRefreshHiddenReason = "refresh_hidden"
+const inviteCodeSecondsPerDay = int64(86400)
+
+func isInviteCodePreserveHistoryEnabled() bool {
+	common.OptionMapRWMutex.RLock()
+	defer common.OptionMapRWMutex.RUnlock()
+	return strings.EqualFold(strings.TrimSpace(common.OptionMap["invite_code_preserve_history_enabled"]), "true")
+}
+
+func ensureActiveInviteCodeForUser(userID int) (*model.InviteCode, error) {
+	code, err := model.GetActiveInviteCodeByUserID(userID)
+	if err == nil {
+		return code, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	user, userErr := model.GetUserById(userID, true)
+	if userErr != nil {
+		return nil, userErr
+	}
+	return model.BackfillInviteCodeFromLegacyAffCode(nil, user.Id)
+}
+
+func GetUserInviteCodeDetail(c *gin.Context) {
+	userID := c.GetInt("id")
+	code, err := ensureActiveInviteCodeForUser(userID)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if user.AffCode == "" {
-		user.AffCode = common.GetRandomString(4)
-		if err := user.Update(false); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    code,
+	})
+}
+
+func UpdateUserInviteCodeRules(c *gin.Context) {
+	userID := c.GetInt("id")
+	var req inviteCodeRulesUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	code, err := model.UpdateActiveInviteCodeRules(nil, userID, req.MaxUses, req.ExpiresAt)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if _, healErr := ensureActiveInviteCodeForUser(userID); healErr != nil {
+			if errors.Is(healErr, gorm.ErrRecordNotFound) || errors.Is(healErr, model.ErrInviteCodeInvalid) {
+				common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+				return
+			}
+			common.ApiError(c, healErr)
+			return
+		}
+		code, err = model.UpdateActiveInviteCodeRules(nil, userID, req.MaxUses, req.ExpiresAt)
+	}
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		if errors.Is(err, model.ErrInviteCodeRuleInvalid) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    code,
+	})
+}
+
+func RefreshUserInviteCode(c *gin.Context) {
+	userID := c.GetInt("id")
+	preserveHistory := isInviteCodePreserveHistoryEnabled()
+
+	oldCode, newCode, err := model.RefreshInviteCode(nil, userID, preserveHistory)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			newCode, err = ensureActiveInviteCodeForUser(userID)
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			oldCode = nil
+		} else {
+			common.ApiError(c, err)
 			return
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    user.AffCode,
+		"data": gin.H{
+			"previous": oldCode,
+			"current":  newCode,
+		},
+	})
+}
+
+func ListInviteCodeHistory(c *gin.Context) {
+	userID := c.GetInt("id")
+	preserveHistory := isInviteCodePreserveHistoryEnabled()
+
+	query := model.DB.Where("user_id = ?", userID)
+	if !preserveHistory {
+		query = query.Where("(invalidated_reason = '' OR invalidated_reason != ?)", inviteCodeRefreshHiddenReason)
+	}
+	var history []model.InviteCode
+	if err := query.Order("id DESC").Find(&history).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    history,
+	})
+}
+
+func GetAffCode(c *gin.Context) {
+	id := c.GetInt("id")
+	code, err := ensureActiveInviteCodeForUser(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    code.Code,
 	})
 	return
 }

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -142,6 +143,12 @@ func InitOptionMap() {
 	common.OptionMap["QuotaForNewUser"] = strconv.Itoa(common.QuotaForNewUser)
 	common.OptionMap["QuotaForInviter"] = strconv.Itoa(common.QuotaForInviter)
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
+	common.OptionMap["invite_code_max_uses_limit"] = "100"
+	common.OptionMap["invite_code_max_expire_days"] = "365"
+	common.OptionMap["invite_code_default_max_uses"] = "1"
+	common.OptionMap["invite_code_default_max_expire_days"] = "30"
+	common.OptionMap["invite_code_preserve_history_enabled"] = "true"
+	common.OptionMap["invite_code_audit_enabled"] = "false"
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
 	common.OptionMap["PreConsumedQuota"] = strconv.Itoa(common.PreConsumedQuota)
 	common.OptionMap["ModelRequestRateLimitCount"] = strconv.Itoa(setting.ModelRequestRateLimitCount)
@@ -214,6 +221,9 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
+	if err := validateOptionValue(key, value); err != nil {
+		return err
+	}
 	option := Option{Key: key}
 	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
 		return err
@@ -228,6 +238,12 @@ func UpdateOption(key string, value string) error {
 func PersistOptionsAtomically(updates []OptionUpdate) error {
 	if len(updates) == 0 {
 		return nil
+	}
+
+	for _, update := range updates {
+		if err := validateOptionValue(update.Key, update.Value); err != nil {
+			return err
+		}
 	}
 
 	return DB.Transaction(func(tx *gorm.DB) error {
@@ -245,10 +261,32 @@ func PersistOptionsAtomically(updates []OptionUpdate) error {
 	})
 }
 
+func validateOptionValue(key string, value string) error {
+	return updateOptionMapWithMutation(key, value, false)
+}
+
 func updateOptionMap(key string, value string) (err error) {
+	return updateOptionMapWithMutation(key, value, true)
+}
+
+func updateOptionMapWithMutation(key string, value string, mutate bool) (err error) {
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
-	common.OptionMap[key] = value
+
+	previousValue, hadPreviousValue := common.OptionMap[key]
+	if mutate {
+		common.OptionMap[key] = value
+	}
+	defer func() {
+		if err == nil || !mutate {
+			return
+		}
+		if hadPreviousValue {
+			common.OptionMap[key] = previousValue
+			return
+		}
+		delete(common.OptionMap, key)
+	}()
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {
@@ -506,6 +544,76 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaForInviter, _ = strconv.Atoi(value)
 	case "QuotaForInvitee":
 		common.QuotaForInvitee, _ = strconv.Atoi(value)
+	case "invite_code_max_uses_limit":
+		limit, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid invite code option %s: %w", key, parseErr)
+			break
+		}
+		if limit < 1 {
+			err = fmt.Errorf("invalid invite code option %s: must be >= 1", key)
+			break
+		}
+		currentDefault := getInviteCodeOptionIntWithMap("invite_code_default_max_uses", 1, common.OptionMap)
+		if currentDefault > limit {
+			err = fmt.Errorf("invalid invite code option %s: must be >= invite_code_default_max_uses", key)
+		}
+	case "invite_code_max_expire_days":
+		limit, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid invite code option %s: %w", key, parseErr)
+			break
+		}
+		if limit < 1 {
+			err = fmt.Errorf("invalid invite code option %s: must be >= 1", key)
+			break
+		}
+		currentDefault := getInviteCodeOptionIntWithMap("invite_code_default_max_expire_days", 30, common.OptionMap)
+		if currentDefault > limit {
+			err = fmt.Errorf("invalid invite code option %s: must be >= invite_code_default_max_expire_days", key)
+		}
+	case "invite_code_default_max_uses":
+		maxUses, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid invite code option %s: %w", key, parseErr)
+			break
+		}
+		if maxUses < 1 {
+			err = fmt.Errorf("invalid invite code option %s: must be >= 1", key)
+			break
+		}
+		limit := getInviteCodeOptionIntWithMap("invite_code_max_uses_limit", inviteCodeDefaultMaxUsesLimit, common.OptionMap)
+		if limit < 1 {
+			limit = inviteCodeDefaultMaxUsesLimit
+		}
+		if maxUses > limit {
+			err = fmt.Errorf("invalid invite code option %s: must be <= invite_code_max_uses_limit", key)
+		}
+	case "invite_code_default_max_expire_days":
+		expireDays, parseErr := strconv.Atoi(value)
+		if parseErr != nil {
+			err = fmt.Errorf("invalid invite code option %s: %w", key, parseErr)
+			break
+		}
+		if expireDays < 1 {
+			err = fmt.Errorf("invalid invite code option %s: must be >= 1", key)
+			break
+		}
+		limit := getInviteCodeOptionIntWithMap("invite_code_max_expire_days", inviteCodeDefaultMaxExpireDays, common.OptionMap)
+		if limit < 1 {
+			limit = inviteCodeDefaultMaxExpireDays
+		}
+		if expireDays > limit {
+			err = fmt.Errorf("invalid invite code option %s: must be <= invite_code_max_expire_days", key)
+		}
+	case "invite_code_preserve_history_enabled":
+		if !isInviteCodeBoolValue(value) {
+			err = fmt.Errorf("invalid invite code option %s: %s", key, value)
+		}
+	case "invite_code_audit_enabled":
+		if !isInviteCodeBoolValue(value) {
+			err = fmt.Errorf("invalid invite code option %s: %s", key, value)
+		}
 	case "QuotaRemindThreshold":
 		common.QuotaRemindThreshold, _ = strconv.Atoi(value)
 	case "PreConsumedQuota":
@@ -574,6 +682,15 @@ func updateOptionMap(key string, value string) (err error) {
 		// No additional in-memory variable to update.
 	}
 	return err
+}
+
+func isInviteCodeBoolValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "false", "1", "0", "yes", "no", "on", "off":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleConfigUpdate 处理分层配置更新，返回是否已处理

@@ -31,6 +31,8 @@ func newFingerprintReportTestContext(method string, target string, body string) 
 
 func initFingerprintReportTestDB(t *testing.T) {
 	t.Helper()
+	oldDB := model.DB
+	oldLOGDB := model.LOG_DB
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
@@ -49,7 +51,14 @@ func initFingerprintReportTestDB(t *testing.T) {
 		&model.LinkWhitelist{},
 	))
 	require.NoError(t, model.EnsureUserSessionUniqueIndex(db))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(db))
 	model.DB = db
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLOGDB
+		_ = sqlDB.Close()
+	})
 }
 
 func TestReportFingerprint_RejectsBodyTooLarge(t *testing.T) {
@@ -214,7 +223,10 @@ func TestFPResetUserFingerprintTestData_DeletesFingerprintTables(t *testing.T) {
 		&model.UserTemporalProfile{},
 		&model.UserSession{},
 	))
+	require.NoError(t, model.EnsureUserSessionUniqueIndex(db))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(db))
 	model.DB = db
+	model.LOG_DB = db
 
 	uid := 7
 	require.NoError(t, model.DB.Create(&model.Fingerprint{UserID: uid, IPAddress: "1.2.3.4", CompositeHash: "abc"}).Error)

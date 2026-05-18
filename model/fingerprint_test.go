@@ -22,6 +22,7 @@ func initFingerprintModelTestDB(t *testing.T) {
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(8)
 	require.NoError(t, db.AutoMigrate(&UserDeviceProfile{}, &Fingerprint{}, &IPUAHistory{}))
+	require.NoError(t, EnsureUserDeviceProfileUniqueIndex(db))
 	DB = db
 	t.Cleanup(func() {
 		DB = oldDB

@@ -30,6 +30,7 @@ func initTestDB(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, model.EnsureUserSessionUniqueIndex(db))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(db))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(db))
 	model.DB = db
 	t.Cleanup(func() {
 		model.DB = oldDB
@@ -1322,6 +1323,7 @@ func TestAnalyzeAccountLinks_FallsBackToDeviceProfilesWhenNoRecentFingerprints(t
 		&model.IPUAHistory{},
 	))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(model.DB))
+	require.NoError(t, model.EnsureUserDeviceProfileUniqueIndex(model.DB))
 
 	oldEnabled := common.FingerprintEnabled
 	oldAuto := os.Getenv("FINGERPRINT_AUTO_CONFIRM_THRESHOLD")

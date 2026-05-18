@@ -259,6 +259,9 @@ func migrateDB() error {
 		&Channel{},
 		&Token{},
 		&User{},
+		&InviteCode{},
+		&InviteCodeUsage{},
+		&InviteCodeAuditLog{},
 		&UserRankingSnapshot{},
 		&UserRankingProgress{},
 		&UserRankingRewardGrant{},
@@ -297,6 +300,9 @@ func migrateDB() error {
 			return err
 		}
 	}
+	if err := backfillInviteCodesFromLegacyUsers(DB); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -311,6 +317,9 @@ func migrateDBFast() error {
 		{&Channel{}, "Channel"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
+		{&InviteCode{}, "InviteCode"},
+		{&InviteCodeUsage{}, "InviteCodeUsage"},
+		{&InviteCodeAuditLog{}, "InviteCodeAuditLog"},
 		{&UserRankingSnapshot{}, "UserRankingSnapshot"},
 		{&UserRankingProgress{}, "UserRankingProgress"},
 		{&UserRankingRewardGrant{}, "UserRankingRewardGrant"},

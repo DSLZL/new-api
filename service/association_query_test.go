@@ -16,8 +16,12 @@ import (
 
 func initAssociationQueryTestDB(t *testing.T) {
 	t.Helper()
+	oldDB := model.DB
+	oldLOGDB := model.LOG_DB
 	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{},
@@ -30,6 +34,12 @@ func initAssociationQueryTestDB(t *testing.T) {
 	))
 	require.NoError(t, model.EnsureAccountLinkUniqueIndex(db))
 	model.DB = db
+	model.LOG_DB = db
+	t.Cleanup(func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLOGDB
+		_ = sqlDB.Close()
+	})
 }
 
 func createAssociationTestUser(t *testing.T, id int, username string) {

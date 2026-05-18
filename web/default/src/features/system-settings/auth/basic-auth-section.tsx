@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/form'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
 import { SettingsSection } from '../components/settings-section'
 import { useResetForm } from '../hooks/use-reset-form'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -28,12 +29,27 @@ const basicAuthSchema = z.object({
   EmailDomainRestrictionEnabled: z.boolean(),
   EmailAliasRestrictionEnabled: z.boolean(),
   EmailDomainWhitelist: z.string(),
+  invite_code_max_uses_limit: z.number().int().min(1),
+  invite_code_max_expire_days: z.number().int().min(1),
+  invite_code_default_max_uses: z.number().int().min(1),
+  invite_code_default_max_expire_days: z.number().int().min(1),
+  invite_code_preserve_history_enabled: z.boolean(),
+  invite_code_audit_enabled: z.boolean(),
 })
 
 type BasicAuthFormValues = z.infer<typeof basicAuthSchema>
+type InviteConfigKeys =
+  | 'invite_code_max_uses_limit'
+  | 'invite_code_max_expire_days'
+  | 'invite_code_default_max_uses'
+  | 'invite_code_default_max_expire_days'
+  | 'invite_code_preserve_history_enabled'
+  | 'invite_code_audit_enabled'
+type BasicAuthInitialValues = Omit<BasicAuthFormValues, InviteConfigKeys> &
+  Partial<Pick<BasicAuthFormValues, InviteConfigKeys>>
 
 type BasicAuthSectionProps = {
-  defaultValues: BasicAuthFormValues
+  defaultValues: BasicAuthInitialValues
 }
 
 export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
@@ -43,6 +59,17 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
   const formDefaults = useMemo<BasicAuthFormValues>(
     () => ({
       ...defaultValues,
+      invite_code_max_uses_limit: defaultValues.invite_code_max_uses_limit ?? 100,
+      invite_code_max_expire_days:
+        defaultValues.invite_code_max_expire_days ?? 365,
+      invite_code_default_max_uses:
+        defaultValues.invite_code_default_max_uses ?? 1,
+      invite_code_default_max_expire_days:
+        defaultValues.invite_code_default_max_expire_days ?? 30,
+      invite_code_preserve_history_enabled:
+        defaultValues.invite_code_preserve_history_enabled ?? true,
+      invite_code_audit_enabled:
+        defaultValues.invite_code_audit_enabled ?? false,
       EmailDomainWhitelist: defaultValues.EmailDomainWhitelist.split(',')
         .map((domain) => domain.trim())
         .filter(Boolean)
@@ -59,7 +86,7 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
   useResetForm(form, formDefaults)
 
   const onSubmit = async (data: BasicAuthFormValues) => {
-    const updates: Array<{ key: string; value: string | boolean }> = []
+    const updates: Array<{ key: string; value: string | boolean | number }> = []
 
     Object.entries(data).forEach(([key, value]) => {
       if (key === 'EmailDomainWhitelist') {
@@ -169,6 +196,148 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
                   </FormLabel>
                   <FormDescription>
                     {t('Require invite code for registration')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_max_uses_limit'
+            render={({ field }) => (
+              <FormItem className='rounded-lg border p-4'>
+                <FormLabel className='text-base'>
+                  {t('Invite Code Max Uses Limit')}
+                </FormLabel>
+                <FormDescription>
+                  {t('Maximum allowed uses for any invite code')}
+                </FormDescription>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    value={field.value}
+                    onChange={(e) => field.onChange(e.target.valueAsNumber || 1)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_max_expire_days'
+            render={({ field }) => (
+              <FormItem className='rounded-lg border p-4'>
+                <FormLabel className='text-base'>
+                  {t('Invite Code Max Expire Days')}
+                </FormLabel>
+                <FormDescription>
+                  {t('Maximum allowed expiration days for any invite code')}
+                </FormDescription>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    value={field.value}
+                    onChange={(e) => field.onChange(e.target.valueAsNumber || 1)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_default_max_uses'
+            render={({ field }) => (
+              <FormItem className='rounded-lg border p-4'>
+                <FormLabel className='text-base'>
+                  {t('Invite Code Default Max Uses')}
+                </FormLabel>
+                <FormDescription>
+                  {t('Default maximum uses when creating a new invite code')}
+                </FormDescription>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    value={field.value}
+                    onChange={(e) => field.onChange(e.target.valueAsNumber || 1)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_default_max_expire_days'
+            render={({ field }) => (
+              <FormItem className='rounded-lg border p-4'>
+                <FormLabel className='text-base'>
+                  {t('Invite Code Default Max Expire Days')}
+                </FormLabel>
+                <FormDescription>
+                  {t('Default expiration days when creating a new invite code')}
+                </FormDescription>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    value={field.value}
+                    onChange={(e) => field.onChange(e.target.valueAsNumber || 1)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_preserve_history_enabled'
+            render={({ field }) => (
+              <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-base'>
+                    {t('Invite Code Preserve History')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t('Keep invite code usage history after code is exhausted')}
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='invite_code_audit_enabled'
+            render={({ field }) => (
+              <FormItem className='flex flex-row items-center justify-between rounded-lg border p-4'>
+                <div className='space-y-0.5'>
+                  <FormLabel className='text-base'>
+                    {t('Invite Code Audit Log')}
+                  </FormLabel>
+                  <FormDescription>
+                    {t('Enable invite code audit logging')}
                   </FormDescription>
                 </div>
                 <FormControl>

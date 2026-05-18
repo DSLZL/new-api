@@ -26,8 +26,18 @@ import {
   Input,
   Badge,
   Space,
+  Tag,
 } from '@douyinfe/semi-ui';
-import { Copy, Users, BarChart2, TrendingUp, Gift, Zap } from 'lucide-react';
+import {
+  Copy,
+  Users,
+  BarChart2,
+  TrendingUp,
+  Gift,
+  Zap,
+  Settings2,
+} from 'lucide-react';
+import { timestamp2string } from '../../helpers';
 
 const { Text } = Typography;
 
@@ -38,9 +48,17 @@ const InvitationCard = ({
   setOpenTransfer,
   affLink,
   handleAffLinkClick,
+  inviteCodeDetail,
+  openInviteModal,
 }) => {
   const ownInviteCode =
-    userState?.user?.aff_code || localStorage.getItem('aff') || '';
+    inviteCodeDetail?.code ||
+    userState?.user?.aff_code ||
+    localStorage.getItem('aff') ||
+    '';
+  const usageText = inviteCodeDetail
+    ? `${inviteCodeDetail.used_count || 0}/${inviteCodeDetail.max_uses || 0}`
+    : '-';
   return (
     <Card className='!rounded-2xl shadow-sm border-0'>
       {/* 卡片头部 */}
@@ -175,6 +193,21 @@ const InvitationCard = ({
             </div>
           }
         >
+          <div className='flex flex-wrap items-center gap-2 mb-3'>
+            <Tag color='blue'>{`${t('使用情况')}: ${usageText}`}</Tag>
+            <Tag color='cyan'>
+              {`${t('过期时间')}: ${timestamp2string(inviteCodeDetail?.expires_at)}`}
+            </Tag>
+            <Button
+              type='secondary'
+              theme='light'
+              onClick={openInviteModal}
+              icon={<Settings2 size={14} />}
+              className='!rounded-lg ml-auto'
+            >
+              {t('管理邀请码')}
+            </Button>
+          </div>
           <Input
             value={ownInviteCode}
             readonly

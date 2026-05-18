@@ -11,11 +11,14 @@ import type {
   PaymentResponse,
   StripePaymentResponse,
   AffiliateCodeResponse,
+  InviteCodeHistoryResponse,
+  InviteCodeRefreshResponse,
   AffiliateTransferResponse,
   BillingHistoryResponse,
   CompleteOrderRequest,
   CreemPaymentRequest,
   CreemPaymentResponse,
+  UpdateInviteCodeRulesRequest,
   WaffoPaymentRequest,
   WaffoPaymentResponse,
   WaffoPancakePaymentRequest,
@@ -155,6 +158,28 @@ export async function requestWaffoPancakePayment(
  */
 export async function getAffiliateCode(): Promise<AffiliateCodeResponse> {
   const res = await api.get('/api/user/aff')
+  return res.data
+}
+
+export async function getInviteCodeDetail(): Promise<AffiliateCodeResponse> {
+  const res = await api.get('/api/user/invite-code')
+  return res.data
+}
+
+export async function updateInviteCodeRules(
+  request: UpdateInviteCodeRulesRequest
+): Promise<AffiliateCodeResponse> {
+  const res = await api.put('/api/user/invite-code', request)
+  return res.data
+}
+
+export async function refreshInviteCode(): Promise<InviteCodeRefreshResponse> {
+  const res = await api.post('/api/user/invite-code/refresh', {})
+  return res.data
+}
+
+export async function getInviteCodeHistory(): Promise<InviteCodeHistoryResponse> {
+  const res = await api.get('/api/user/invite-codes/history')
   return res.data
 }
 

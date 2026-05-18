@@ -16,6 +16,8 @@ import (
 
 func setupUserRankingServiceTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	oldDB := model.DB
+	oldLOGDB := model.LOG_DB
 
 	common.UsingSQLite = true
 	common.UsingMySQL = false
@@ -31,6 +33,8 @@ func setupUserRankingServiceTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.Option{}, &model.UserRankingSnapshot{}))
 
 	t.Cleanup(func() {
+		model.DB = oldDB
+		model.LOG_DB = oldLOGDB
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()

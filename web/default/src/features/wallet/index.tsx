@@ -7,6 +7,7 @@ import { SectionPageLayout } from '@/components/layout'
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
+import { InviteCodeManagerDialog } from './components/dialogs/invite-code-manager-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
@@ -17,6 +18,7 @@ import {
   useTopupInfo,
   usePayment,
   useAffiliate,
+  useInviteCode,
   useRedemption,
   useCreemPayment,
   useWaffoPayment,
@@ -50,6 +52,7 @@ export function Wallet(props: WalletProps) {
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
+  const [inviteCodeDialogOpen, setInviteCodeDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
   const [creemDialogOpen, setCreemDialogOpen] = useState(false)
   const [selectedCreemProduct, setSelectedCreemProduct] =
@@ -79,6 +82,18 @@ export function Wallet(props: WalletProps) {
     transferQuota,
     transferring,
   } = useAffiliate()
+  const {
+    inviteCode,
+    history: inviteCodeHistory,
+    saving: inviteCodeSaving,
+    refreshing: inviteCodeRefreshing,
+    historyLoading: inviteCodeHistoryLoading,
+    refreshResult: inviteCodeRefreshResult,
+    updateRules: updateInviteCodeRules,
+    refresh: refreshInviteCode,
+    loadHistory: loadInviteCodeHistory,
+    clearRefreshResult: clearInviteCodeRefreshResult,
+  } = useInviteCode()
   const { redeeming, redeemCode } = useRedemption()
   const { processing: creemProcessing, processCreemPayment } = useCreemPayment()
   const { processWaffoPayment } = useWaffoPayment()
@@ -300,7 +315,9 @@ export function Wallet(props: WalletProps) {
             <AffiliateRewardsCard
               user={user}
               affiliateLink={affiliateLink}
+              inviteCode={inviteCode}
               onTransfer={() => setTransferDialogOpen(true)}
+              onManageInviteCode={() => setInviteCodeDialogOpen(true)}
               loading={affiliateLoading}
             />
           </div>
@@ -339,6 +356,21 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleCreemConfirm}
         product={selectedCreemProduct}
         processing={creemProcessing}
+      />
+
+      <InviteCodeManagerDialog
+        open={inviteCodeDialogOpen}
+        onOpenChange={setInviteCodeDialogOpen}
+        inviteCode={inviteCode}
+        history={inviteCodeHistory}
+        historyLoading={inviteCodeHistoryLoading}
+        saving={inviteCodeSaving}
+        refreshing={inviteCodeRefreshing}
+        refreshResult={inviteCodeRefreshResult}
+        onUpdateRules={updateInviteCodeRules}
+        onRefresh={refreshInviteCode}
+        onLoadHistory={loadInviteCodeHistory}
+        onClearRefreshResult={clearInviteCodeRefreshResult}
       />
     </>
   )

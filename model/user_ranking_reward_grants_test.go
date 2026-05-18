@@ -13,11 +13,18 @@ import (
 
 func initUserRankingRewardGrantTestDB(t *testing.T) {
 	t.Helper()
+	oldDB := DB
 	dsn := fmt.Sprintf("file:%s_%d?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&UserRankingRewardGrant{}))
 	DB = db
+	t.Cleanup(func() {
+		DB = oldDB
+		_ = sqlDB.Close()
+	})
 }
 
 func TestRankingRewardGrantInsert_IdempotentByUniqueKey(t *testing.T) {

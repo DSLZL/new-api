@@ -137,7 +137,7 @@ const InviteRequiredForm = () => {
                   <Form.Input
                     field='invite_code'
                     label={t('邀请码')}
-                    placeholder={t('请输入邀请人的 4 位邀请码')}
+                    placeholder={t('请输入邀请人的邀请码')}
                     value={inviteCode}
                     onChange={(value) => setInviteCode(value)}
                     prefix={<IconKey />}
