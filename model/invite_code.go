@@ -467,6 +467,26 @@ func createInviteCodeWithExplicitCode(tx *gorm.DB, userID int, explicitCode stri
 	return item, nil
 }
 
+func createInviteCodeFromLegacyAffCode(tx *gorm.DB, user *User) (*InviteCode, error) {
+	if user == nil || user.Id <= 0 {
+		return nil, ErrInviteCodeInvalid
+	}
+
+	legacyCode := NormalizeAffCode(user.AffCode)
+	if legacyCode == "" {
+		return createInitialInviteCodeForUserTxLocked(tx, user, inviteCodeDefaultLength)
+	}
+
+	item, err := createInviteCodeWithExplicitCode(tx, user.Id, legacyCode)
+	if err == nil {
+		return item, nil
+	}
+	if !isInviteCodeDuplicateError(err) {
+		return nil, err
+	}
+	return createInitialInviteCodeForUserTxLocked(tx, user, inviteCodeDefaultLength)
+}
+
 func BackfillInviteCodeFromLegacyAffCode(tx *gorm.DB, userID int) (*InviteCode, error) {
 	if userID <= 0 {
 		return nil, ErrInviteCodeInvalid
@@ -502,12 +522,7 @@ func BackfillInviteCodeFromLegacyAffCode(tx *gorm.DB, userID int) (*InviteCode, 
 	if err := db.Select("id", "aff_code").First(&owner, "id = ?", userID).Error; err != nil {
 		return nil, err
 	}
-
-	legacyCode := NormalizeAffCode(owner.AffCode)
-	if legacyCode != "" {
-		return createInviteCodeWithExplicitCode(db, owner.Id, legacyCode)
-	}
-	return CreateInitialInviteCodeForUser(db, &owner)
+	return createInviteCodeFromLegacyAffCode(db, &owner)
 }
 
 func backfillInviteCodesFromLegacyUsers(db *gorm.DB) error {

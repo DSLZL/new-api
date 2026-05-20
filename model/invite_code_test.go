@@ -462,6 +462,51 @@ func TestBackfillInviteCodesFromLegacyAffCode(t *testing.T) {
 	require.Equal(t, int64(1), inviteCodeCount)
 }
 
+func TestBackfillInviteCodeFallsBackWhenLegacyAffCodeConflicts(t *testing.T) {
+	initInviteCodeModelTestDB(t)
+	require.NoError(t, migrateDB())
+	InitOptionMap()
+	setInviteCodeTestOptions(t, map[string]string{
+		"invite_code_default_max_uses":        "4",
+		"invite_code_default_max_expire_days": "7",
+	})
+
+	ownerWithCode := createInviteCodeOwnerForTest(t, "legacy_conflict_owner")
+	var existing *InviteCode
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		existing, err = CreateInitialInviteCodeForUser(tx, ownerWithCode)
+		return err
+	}))
+	require.NotNil(t, existing)
+	require.NoError(t, DB.Model(&User{}).
+		Where("id = ?", ownerWithCode.Id).
+		Update("aff_code", "OWNERALT1").Error)
+
+	legacyUser := &User{
+		Username:    fmt.Sprintf("legacy_conflict_%d", time.Now().UnixNano()),
+		Password:    "password123",
+		DisplayName: "legacy-conflict-user",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     existing.Code,
+	}
+	require.NoError(t, DB.Create(legacyUser).Error)
+
+	created, err := BackfillInviteCodeFromLegacyAffCode(DB, legacyUser.Id)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, legacyUser.Id, created.UserId)
+	require.Equal(t, InviteCodeStatusActive, created.Status)
+	require.NotEqual(t, existing.Code, created.Code)
+
+	var savedUser User
+	require.NoError(t, DB.First(&savedUser, "id = ?", legacyUser.Id).Error)
+	require.Equal(t, created.Code, savedUser.AffCode)
+	require.NotEqual(t, existing.Code, savedUser.AffCode)
+}
+
 func TestConsumeInviteCodeMarksExhaustedAtLimit(t *testing.T) {
 	initInviteCodeModelTestDB(t)
 	require.NoError(t, migrateDB())
