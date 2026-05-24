@@ -67,6 +67,37 @@ func TestGetUserInviteCodeDetail(t *testing.T) {
 	require.Equal(t, model.InviteCodeStatusActive, data["status"])
 }
 
+func TestGetUserInviteCodeDetail_ReissuesFreshCodeWhenLatestInviteCodeExhausted(t *testing.T) {
+	setupInviteCodeControllerTestDB(t)
+
+	user := createInviteTestUser(t, "invite_detail_exhausted_user", "LEGACY-STILL-STORED")
+	exhausted := createInviteCodeRecord(t, user.Id, "EXHAUSTED-DETAIL-CODE", 1, 1, common.GetTimestamp()+7200)
+	require.NoError(t, model.DB.Model(&model.InviteCode{}).
+		Where("id = ?", exhausted.Id).
+		UpdateColumns(map[string]any{
+			"status":     model.InviteCodeStatusExhausted,
+			"used_count": 1,
+			"max_uses":   1,
+		}).Error)
+
+	ctx, recorder := newInviteCodeAuthedContext(http.MethodGet, "/api/user/invite-code", "", user.Id)
+	GetUserInviteCodeDetail(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeControllerResp(t, recorder)
+	require.Equal(t, true, resp["success"])
+
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok)
+
+	code, ok := data["code"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, code)
+	require.NotEqual(t, user.AffCode, code)
+	require.NotEqual(t, exhausted.Code, code)
+	require.Equal(t, model.InviteCodeStatusActive, data["status"])
+}
+
 func TestUpdateUserInviteCodeRules(t *testing.T) {
 	setupInviteCodeControllerTestDB(t)
 
@@ -213,6 +244,43 @@ func TestRefreshUserInviteCode(t *testing.T) {
 	affResp := decodeControllerResp(t, affRecorder)
 	require.Equal(t, true, affResp["success"])
 	require.Equal(t, activeCode.Code, affResp["data"])
+}
+
+func TestRefreshUserInviteCode_ReissuesFreshCodeWhenLatestInviteCodeExhausted(t *testing.T) {
+	setupInviteCodeControllerTestDB(t)
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["invite_code_preserve_history_enabled"] = "true"
+	common.OptionMapRWMutex.Unlock()
+
+	user := createInviteTestUser(t, "invite_refresh_exhausted_user", "LEGACY-REFRESH-STILL-STORED")
+	exhausted := createInviteCodeRecord(t, user.Id, "EXHAUSTED-REFRESH-CODE", 1, 1, common.GetTimestamp()+7200)
+	require.NoError(t, model.DB.Model(&model.InviteCode{}).
+		Where("id = ?", exhausted.Id).
+		UpdateColumns(map[string]any{
+			"status":     model.InviteCodeStatusExhausted,
+			"used_count": 1,
+			"max_uses":   1,
+		}).Error)
+
+	ctx, recorder := newInviteCodeAuthedContext(http.MethodPost, "/api/user/invite-code/refresh", "{}", user.Id)
+	RefreshUserInviteCode(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	resp := decodeControllerResp(t, recorder)
+	require.Equal(t, true, resp["success"])
+
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok)
+	current, ok := data["current"].(map[string]any)
+	require.True(t, ok)
+
+	code, ok := current["code"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, code)
+	require.NotEqual(t, user.AffCode, code)
+	require.NotEqual(t, exhausted.Code, code)
+	require.Equal(t, model.InviteCodeStatusActive, current["status"])
 }
 
 func TestRefreshUserInviteCodeWithCustomLength(t *testing.T) {

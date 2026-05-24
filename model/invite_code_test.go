@@ -507,6 +507,34 @@ func TestBackfillInviteCodeFallsBackWhenLegacyAffCodeConflicts(t *testing.T) {
 	require.NotEqual(t, existing.Code, savedUser.AffCode)
 }
 
+func TestBackfillInviteCodeCreatesFreshCodeWhenInviteHistoryExistsWithoutActive(t *testing.T) {
+	initInviteCodeModelTestDB(t)
+	require.NoError(t, migrateDB())
+	InitOptionMap()
+
+	user := createInviteCodeOwnerForTest(t, "backfill_history")
+	require.NoError(t, DB.Create(&InviteCode{
+		UserId:    user.Id,
+		Code:      "HISTORY-EXHAUSTED",
+		Status:    InviteCodeStatusExhausted,
+		MaxUses:   1,
+		UsedCount: 1,
+		ExpiresAt: common.GetTimestamp() + 3600,
+	}).Error)
+
+	created, err := BackfillInviteCodeFromLegacyAffCode(DB, user.Id)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Equal(t, user.Id, created.UserId)
+	require.Equal(t, InviteCodeStatusActive, created.Status)
+	require.NotEqual(t, "HISTORY-EXHAUSTED", created.Code)
+	require.NotEqual(t, user.AffCode, created.Code)
+
+	var savedUser User
+	require.NoError(t, DB.First(&savedUser, "id = ?", user.Id).Error)
+	require.Equal(t, created.Code, savedUser.AffCode)
+}
+
 func TestConsumeInviteCodeMarksExhaustedAtLimit(t *testing.T) {
 	initInviteCodeModelTestDB(t)
 	require.NoError(t, migrateDB())

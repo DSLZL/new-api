@@ -522,6 +522,14 @@ func BackfillInviteCodeFromLegacyAffCode(tx *gorm.DB, userID int) (*InviteCode, 
 	if err := db.Select("id", "aff_code").First(&owner, "id = ?", userID).Error; err != nil {
 		return nil, err
 	}
+	var latest InviteCode
+	if err := db.Where("user_id = ?", userID).
+		Order("id DESC").
+		First(&latest).Error; err == nil {
+		return createInitialInviteCodeForUserTxLocked(db, &owner, inviteCodeDefaultLength)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
 	return createInviteCodeFromLegacyAffCode(db, &owner)
 }
 
