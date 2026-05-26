@@ -17,8 +17,65 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build_frontend_assets:
+    name: Build frontend assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+          fetch-tags: true
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag & write VERSION
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              echo "::error::Tag '$TAG' does not exist in the repository"
+              exit 1
+            fi
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "$TAG" > VERSION
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web/default
+        working-directory: web/default
+        run: |
+          bun install --frozen-lockfile
+          DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION="$(cat ../../VERSION)" bun run build
+
+      - name: Build web/classic
+        working-directory: web/classic
+        run: |
+          bun install --frozen-lockfile
+          VITE_REACT_APP_VERSION="$(cat ../../VERSION)" bun run build
+
+      - name: Pack frontend dist
+        run: |
+          mkdir -p .tmp
+          tar -czf .tmp/frontend-dist.tar.gz web/default/dist web/classic/dist
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: .tmp/frontend-dist.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   build_single_arch:
     name: Build & push (${{ matrix.arch }}) [native]
+    needs: [build_frontend_assets]
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +103,8 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.tag }}" ]; then
             TAG="${{ github.event.inputs.tag }}"
-            if ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
-              echo "Error: Tag '$TAG' does not exist in the repository"
+            if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+              echo "::error::Tag '$TAG' does not exist in the repository"
               exit 1
             fi
           else
@@ -57,6 +114,20 @@ jobs:
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           echo "$TAG" > VERSION
           echo "Building tag: $TAG for ${{ matrix.arch }}"
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: .tmp
+
+      - name: Extract frontend dist
+        run: tar -xzf .tmp/frontend-dist.tar.gz
+
+      - name: Verify frontend dist
+        run: |
+          test -d web/default/dist
+          test -d web/classic/dist
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -79,7 +150,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.ghcr
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
@@ -104,7 +175,8 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Cache scopes used: \`docker-build-${{ matrix.arch }}\`, \`docker-build-shared\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "Dockerfile cache mounts enabled: bun cache, go module cache, go build cache." >> "$GITHUB_STEP_SUMMARY"
+          echo "Frontend assets restored from artifact: \`frontend-dist\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dockerfile cache mounts enabled: go module cache, go build cache." >> "$GITHUB_STEP_SUMMARY"
 
   create_manifests:
     name: Create multi-arch manifests (GHCR)
@@ -138,20 +210,13 @@ jobs:
       - name: Create & push manifest (version)
         run: |
           docker buildx imagetools create \
-            -t "${IMAGE}:${TAG}" \
-            "${IMAGE}:${TAG}-amd64" \
-            "${IMAGE}:${TAG}-arm64"
+            -t "$IMAGE:$TAG" \
+            "$IMAGE:$TAG-amd64" \
+            "$IMAGE:$TAG-arm64"
 
       - name: Create & push manifest (latest)
         run: |
           docker buildx imagetools create \
-            -t "${IMAGE}:latest" \
-            "${IMAGE}:latest-amd64" \
-            "${IMAGE}:latest-arm64"
-
-      - name: Output manifest digest
-        run: |
-          echo "### GHCR Multi-arch Manifest (${TAG})" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          docker buildx imagetools inspect "${IMAGE}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+            -t "$IMAGE:latest" \
+            "$IMAGE:latest-amd64" \
+            "$IMAGE:latest-arm64"
