@@ -39,6 +39,21 @@ type Log struct {
 	Other            string `json:"other"`
 }
 
+func withRequestUserAgent(c *gin.Context, other map[string]interface{}) map[string]interface{} {
+	userAgent := c.GetHeader("User-Agent")
+	if userAgent == "" {
+		return other
+	}
+	enriched := make(map[string]interface{}, len(other)+1)
+	for key, value := range other {
+		enriched[key] = value
+	}
+	if _, exists := enriched["user_agent"]; !exists {
+		enriched["user_agent"] = userAgent
+	}
+	return enriched
+}
+
 // don't use iota, avoid change log type value
 const (
 	LogTypeUnknown = 0
@@ -147,6 +162,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	logger.LogInfo(c, fmt.Sprintf("record error log: userId=%d, channelId=%d, modelName=%s, tokenName=%s, content=%s", userId, channelId, modelName, tokenName, content))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
+	other = withRequestUserAgent(c, other)
 	otherStr := common.MapToJsonStr(other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -208,7 +224,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
-	otherStr := common.MapToJsonStr(params.Other)
+	otherStr := common.MapToJsonStr(withRequestUserAgent(c, params.Other))
 	// 判断是否需要记录 IP
 	needRecordIp := false
 	if settingMap, err := GetUserSetting(userId, false); err == nil {

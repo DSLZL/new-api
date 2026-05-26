@@ -533,6 +533,12 @@ export const useLogsData = () => {
           value: other.request_path,
         });
       }
+      if (other?.user_agent) {
+        expandDataLocal.push({
+          key: t('User Agent'),
+          value: other.user_agent,
+        });
+      }
       if (isAdminUser && other?.stream_status) {
         const ss = other.stream_status;
         const isOk = ss.status === 'ok';

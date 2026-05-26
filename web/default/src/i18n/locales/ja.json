@@ -3238,6 +3238,7 @@
     "Request Header Override": "リクエストヘッダー上書き",
     "Request Header Overrides": "リクエストヘッダーの上書き",
     "Request ID": "リクエストID",
+    "User Agent": "ユーザーエージェント",
     "Request Limits": "リクエスト制限",
     "Request Model": "リクエストモデル",
     "Request Model:": "リクエストモデル：",

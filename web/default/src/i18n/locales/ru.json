@@ -3238,6 +3238,7 @@
     "Request Header Override": "Переопределение заголовков запроса",
     "Request Header Overrides": "Переопределения заголовков запроса",
     "Request ID": "ID запроса",
+    "User Agent": "Агент пользователя",
     "Request Limits": "Лимиты запросов",
     "Request Model": "Запрошенная модель",
     "Request Model:": "Модель запроса:",
