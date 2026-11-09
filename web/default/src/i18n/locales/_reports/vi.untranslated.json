@@ -1,5 +1,12 @@
 {
   "Base input and output token prices for this tier.": "Base input and output token prices for this tier.",
   "Each tier supports up to 2 conditions. The last tier without conditions is the fallback.": "Each tier supports up to 2 conditions. The last tier without conditions is the fallback.",
-  "Set separate prices for cache reads and writes.": "Set separate prices for cache reads and writes."
+  "Set separate prices for cache reads and writes.": "Set separate prices for cache reads and writes.",
+  "Track top users by balance, invites, and quota consumption in real time.": "Track top users by balance, invites, and quota consumption in real time.",
+  "This leaderboard is restricted to logged-in users.": "This leaderboard is restricted to logged-in users.",
+  "Unable to load user rankings": "Unable to load user rankings",
+  "Choose who can access the user rankings page.": "Choose who can access the user rankings page.",
+  "When enabled, rewards are settled the next day based on the previous Beijing day snapshots.": "When enabled, rewards are settled the next day based on the previous Beijing day snapshots.",
+  "Please fix ranking reward rules before saving": "Please fix ranking reward rules before saving",
+  "Duplicate rank in the same leaderboard": "Duplicate rank in the same leaderboard"
 }
